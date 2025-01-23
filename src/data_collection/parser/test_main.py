@@ -3,12 +3,12 @@ sys.path.append(r'C:\Users\310\Desktop\Progects_Py\Risk-and-return-prediction-wi
 
 from data_collection.parser.parser_class import Parser
 
-def main():
-    years: list[int] = [2019, 2020, 2021, 2022, 2023]
-    quartrs: list[int] = [1, 2, 3, 4] 
+def test_main():
+    years: list[int] = [2022,2023]
+    quartrs: list[int] = [3, 4] 
 
     parser = Parser(years, quartrs)
-    print(parser.qrtrs)
+    parser.get_company_links_object()
 
 if __name__ == "__main__":
-    main()
+    test_main()
