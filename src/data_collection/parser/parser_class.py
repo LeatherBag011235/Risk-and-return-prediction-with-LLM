@@ -10,8 +10,7 @@ class Parser:
     and filters them for S&P 500 companies. The class provides methods to compile these links into a 
     structured format for further usage.
     """
-
-
+    
     headers = {
     'User-Agent': 'mvshibanov@edu.hse.ru'
 }
@@ -190,12 +189,36 @@ class Parser:
 
         return links_n_dates
 
-    def compile_links(self) -> dict:
+    def compile_links(self) -> dict[str]:
         """
         Iterates over all remaining S&P 500 company tickers in self.snp_quarter_df,
         retrieves their sorted filings via get_links_n_dates, and compiles the results
         into a dictionary (self.company_links_object) where keys are tickers and 
         values are lists of filing links/dates.
+        Structure of company_links_object:
+                {
+            "AAPL": [
+                {
+                    "page_link": "/Archives/edgar/data/320193/000032019323000067/0000320193-23-000067-index.htm",
+                    "filed_date": "2023-09-30"
+                },
+                {
+                    "page_link": "/Archives/edgar/data/320193/000032019323000066/0000320193-23-000066-index.htm",
+                    "filed_date": "2023-06-30"
+                }
+            ],
+            "MSFT": [
+                {
+                    "page_link": "/Archives/edgar/data/789019/000078901923000012/0000789019-23-000012-index.htm",
+                    "filed_date": "2023-08-15"
+                },
+                {
+                    "page_link": "/Archives/edgar/data/789019/000078901923000011/0000789019-23-000011-index.htm",
+                    "filed_date": "2023-05-15"
+                }
+            ]
+        }
+
         """
         company_names = self.snp_quarter_df['ticker'].unique()
 
