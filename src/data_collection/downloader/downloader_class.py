@@ -1,5 +1,3 @@
-from .consts import start_pattern, steart_pattern_reserve, end_pattern
-
 import requests
 from bs4 import BeautifulSoup
 import time
@@ -7,15 +5,38 @@ import unidecode
 import re
 import polars as pl
 import os
+from pathlib import Path
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from .consts import start_pattern, steart_pattern_reserve, end_pattern
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()]
+)
 
 class Downloader:
+    """
+    Downloader class to scrape, process, and save financial reports from SEC archives.
 
+    Attributes:
+        headers (dict): Headers for HTTP requests. User-Agent must be defined.
+        company_links (dict): Mapping of company tickers to their SEC filing liks and filed dates,
+        sorted in decending order (most reasent first).
+        save_dir (Path): Directory path where processed files will be saved.
+    """
     headers = {
     'User-Agent': 'mvshibanov@edu.hse.ru'
 }
 
-    def __init__(self, company_links: dict[str]):
+    def __init__(self, company_links: dict[str, list[dict]], save_dir: Path):
         """
+        Args:
+            company_links (dict[str, list[dict]]): Structure containing company tickers and their filing metadata.
+            save_dir (Path): Directory where processed files will be saved.
+
         Structure of company_links_object:
                 {
             "AAPL": [
@@ -42,11 +63,24 @@ class Downloader:
 
         """
         self.company_links = company_links
+        self.save_dir = save_dir
+
 
     @staticmethod
-    def get_soup(session, company_name, url):
+    def get_soup(session: requests.Session, company_name: str, url: str) -> BeautifulSoup:
+        """
+        Fetch and parse HTML content from SEC archives.
+
+        Args:
+            session (requests.Session): Shared HTTP session for making requests.
+            company_name (str): Ticker of the company being processed.
+            url (str): Partial URL to the SEC filing.
+
+        Returns:
+            BeautifulSoup: Parsed HTML content of the filing, or None if all attempts fail.
+        """
         ATTEMPTS_AMOUNT = 3
-        TIMEOUT=15
+        TIMEOUT = 15
         backoff_time = 2
 
         full_url = f'https://www.sec.gov/Archives/{url}'
@@ -54,44 +88,54 @@ class Downloader:
         for attempt in range(ATTEMPTS_AMOUNT):
             try:
                 response = session.get(full_url, headers=Downloader.headers, timeout=TIMEOUT)
-
+                response.raise_for_status()
                 content  = response.text
 
                 start_match = start_pattern.search(content)
                 if start_match:
                     start_idx = start_match.end()
                 else:
-                    print(f'Fail to find start idx in {company_name} ==> {full_url} \n use <html> instead')
+                    logging.warning(f"Failed to find start index in {company_name} ==> {full_url}. Using fallback pattern.")
                     start_match = steart_pattern_reserve.search(content)
 
                     if start_match:
                         start_idx = start_match.end()
                     else:
-                        print(f'Fail to find start idx with <html> {company_name} ==> {full_url} \n !!!!!!!!!!!!')
+                        logging.error(f"Failed to find start index with fallback in {company_name} ==> {full_url}")
+                        return None
 
                 end_match = end_pattern.search(content, start_idx)
                 if end_match:
                     end_idx = end_match.end()
                 else:
-                    print(f'Fail to find end idx in{company_name} ==> {full_url}')
+                    logging.error(f"Failed to find end index in {company_name} ==> {full_url}")
+                    return None
 
                 html_content = content[start_idx:end_idx]
                 soup = BeautifulSoup(html_content, 'html.parser')
-
-                print(f"Page {company_name} ==> {full_url} paresed successfully.")
-
+                logging.info(f"Page {company_name} ==> {full_url} parsed successfully.")
                 return soup
             
             except requests.exceptions.RequestException as e:
-                print(f"Attempt {attempt + 1} of {ATTEMPTS_AMOUNT} failed for {full_url} retrying after {backoff_time} seconds...")
+                logging.warning(f"Attempt {attempt + 1} of {ATTEMPTS_AMOUNT} failed for {full_url}: {e}\nRetrying after {backoff_time}...")
                 time.sleep(backoff_time) 
                 backoff_time *= 2
 
-        print(f"All attempts failed for {company_name} ==> {full_url}")
+        logging.error(f"All attempts failed for {company_name} ==> {full_url}")
         return None
+
     
     @staticmethod
-    def delete_tabeles(soup):
+    def delete_tables(soup: BeautifulSoup) -> BeautifulSoup:
+        """
+        Remove unnecessary elements (scripts, tables, links) from the HTML content.
+
+        Args:
+            soup (BeautifulSoup): Parsed HTML content.
+
+        Returns:
+            BeautifulSoup: Cleaned HTML content.
+        """
         for script in soup(["script", "style", "head", "title", "meta", "[document]"]):
                 script.decompose() 
 
@@ -102,66 +146,99 @@ class Downloader:
             a.decompose()
         return soup
     
+
     @staticmethod
-    def text_preprocessing(soup):
+    def text_preprocessing(soup: BeautifulSoup) -> str:
+        """
+        Extract and normalize text content from the HTML.
+
+        Args:
+            soup (BeautifulSoup): Parsed HTML content.
+
+        Returns:
+            str: Normalized text content.
+        """
         text = soup.get_text()
-        text = unidecode.unidecode(text)
-        text = re.sub(r'\s+', ' ', text).strip()
-        return text
+        return unidecode.unidecode(text)
     
+
     @staticmethod
-    def clean_text(text):
+    def clean_text(text: str) -> str:
+        """
+        Perform additional cleaning of text content.
+
+        Args:
+            text (str): Raw text content.
+
+        Returns:
+            str: Cleaned text with special characters and numbers removed.
+        """
         text = re.sub(r'[^a-zA-Z0-9 ]', '', text)
         text = re.sub(r'\b\S*?\d\S*\b', '', text)
         text = re.sub(r'\s+', ' ', text)
-        text = text.strip()
-        return text 
+        return text.strip()
     
-    @staticmethod
-    def save_file(text, company_name, filed_date):
-        file_name = f'{filed_date}.parquet'
-    
+
+    def save_file(self, text: str, company_name: str, filed_date: str) -> None:
+        """
+        Save cleaned text as a Parquet file.
+
+        Args:
+            text (str): Cleaned text content.
+            company_name (str): Ticker of the company.
+            filed_date (str): Filing date, used as the filename.
+        """
+        file_name = f"{filed_date}.parquet"
         text_col = pl.DataFrame(text.split())
 
-        directory_path = f'./raw_data/full_snp_five_hundred/{company_name}/'
+        directory_path = Path(self.save_dir) / company_name
+        directory_path.mkdir(parents=True, exist_ok=True)
 
-        if not os.path.exists(f'{directory_path}'):
-            os.makedirs(f'{directory_path}')
-
-        text_col.write_parquet(os.path.join(directory_path, file_name))
-
-        print(f"Text for {company_name} ==> {os.path.join(directory_path, file_name)} saved successfully.")
+        file_path = directory_path / file_name
+        text_col.write_parquet(file_path)
+        logging.info(f"Text for {company_name} ==> {file_path} saved successfully.")
 
 
-    def download_files(self):
-        fails = 0
-        len_list = []
-        all_docs_procesed = 0 
+    def process_filing(self, session: requests.Session, company_name: str, filing: dict) -> None:
+        """
+        Process a single filing: download, clean, and save.
 
+        Args:
+            session (requests.Session): HTTP session for requests.
+            company_name (str): Ticker of the company.
+            filing (dict): Metadata for the filing.
+        """
+        soup = Downloader.get_soup(session, company_name, filing['page_link'])
+        if not soup:
+            return
+
+        soup = Downloader.delete_tables(soup)
+        text = Downloader.text_preprocessing(soup)
+        cleaned_text = Downloader.clean_text(text)
+
+        if len(cleaned_text) > 10000:
+            self.save_file(cleaned_text, company_name, filing['filed_date'])
+        else:
+            logging.warning(f"{company_name} filing {filing['filed_date']} has less than 10,000 characters. Not saved.")
+
+    
+    def download_files(self) -> None:
+        """
+        Download and process all files using parallel processing.
+        """
         session = requests.Session()
+        all_tasks = []
 
-        for key in self.company_links_object.keys():
+        with ThreadPoolExecutor() as executor:
+            for company_name, filings in self.company_links.items():
+                for filing in filings:
+                    task = executor.submit(self.process_filing, session, company_name, filing)
+                    all_tasks.append(task)
 
-            for item_obj in self.company_links_object[key]:
+            for future in as_completed(all_tasks):
+                try:
+                    future.result()
+                except Exception as e:
+                    logging.error(f"Error processing a filing: {e}")
 
-                all_docs_procesed +=1
-
-                soup1 = Downloader.get_soup(session, key, item_obj['page_link'])
-                soup2 = Downloader.delete_tabeles(soup1)
-
-                text = Downloader.text_preprocessing(soup2)
-
-                cleaned_text = Downloader.clean_text(text)
-
-                if len(cleaned_text) > 10000:
-
-                    print(key, item_obj['filed_date'])
-
-                    Downloader.save_file(cleaned_text, key, item_obj['filed_date'])
-                    len_list.append(len(cleaned_text))
-
-                else:
-                    print(f" \n {key} \n len of {item_obj['page_link']} less then 10000 characters: {len(cleaned_text)} \n It is not saved \n")  
-
-        print(f'Fails over all docs procesed: {fails/all_docs_procesed}')
-        print(f'Average len of text {sum(len_list)/all_docs_procesed}')
+        logging.info("All filings processed.")

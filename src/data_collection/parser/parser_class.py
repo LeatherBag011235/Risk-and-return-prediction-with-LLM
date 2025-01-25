@@ -38,7 +38,7 @@ class Parser:
         self.loaded_comapines_set = set()
         self.snp_remainings_df = pd.DataFrame()
         self.snp_quarter_df = pd.DataFrame()
-        self.company_links_object = {}
+        self.company_links = {}
 
 
     @staticmethod
@@ -189,7 +189,7 @@ class Parser:
 
         return links_n_dates
 
-    def compile_links(self) -> dict[str]:
+    def compile_links(self) -> dict[str, list[dict]]:
         """
         Iterates over all remaining S&P 500 company tickers in self.snp_quarter_df,
         retrieves their sorted filings via get_links_n_dates, and compiles the results
@@ -226,9 +226,9 @@ class Parser:
 
             links_n_dates = Parser.get_links_n_dates(self.snp_quarter_df, company_name)
 
-            self.company_links_object[company_name] = links_n_dates
+            self.company_links[company_name] = links_n_dates
 
-    def get_company_links_object(self) -> dict[str]:
+    def get_company_links_object(self) -> dict[str, list[dict]]:
         """
         Orchestrates the entire process:
          - Iterates over self.years and self.quartrs to download the SEC index files.
@@ -261,7 +261,7 @@ class Parser:
 
         self.compile_links()
 
-        return self.company_links_object
+        return self.company_links
 
 
 
