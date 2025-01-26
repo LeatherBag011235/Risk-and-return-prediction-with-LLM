@@ -30,7 +30,7 @@ class Downloader:
     'User-Agent': 'mvshibanov@edu.hse.ru'
 }
 
-    def __init__(self, company_links: dict[str, list[dict]], save_dir: Path):
+    def __init__(self, company_links: dict[str, list[dict]], raw_files_dir: Path):
         """
         Args:
             company_links (dict[str, list[dict]]): Structure containing company tickers and their filing metadata.
@@ -62,7 +62,7 @@ class Downloader:
 
         """
         self.company_links = company_links
-        self.save_dir = save_dir
+        self.save_dir = raw_files_dir
 
 
     @staticmethod
