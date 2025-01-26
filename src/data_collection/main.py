@@ -14,13 +14,18 @@ start_time = time.time()
 def main():
     years: list[int] = [2013, 2012]
     quartrs: list[int] = [3, 4] 
-    save_dir: Path = Path(r"C:\Users\310\Desktop\Progects_Py\data\Parsim_sec_data\raw_data\2013_reports")
 
-    parser = Parser(years, quartrs, save_dir)
+    raw_files_dir: Path = Path(r"C:\Users\310\Desktop\Progects_Py\data\Parsim_sec_data\raw_data\2013_reports")
+    prepared_files_dir: Path = Path(r"C:\Users\310\Desktop\Progects_Py\data\Parsim_sec_data\prepared_data\2013_reports")
+
+    parser = Parser(years, quartrs, raw_files_dir)
     company_links: dict[str, list[dict]] = parser.get_company_links_object()
     
-    downloader = Downloader(company_links, save_dir)
+    downloader = Downloader(company_links, raw_files_dir)
     downloader.download_files()
+
+    converter = DictionaryConverter(raw_files_dir, prepared_files_dir)
+    converter.convert_files()
 
     Converter(save_dir)
 

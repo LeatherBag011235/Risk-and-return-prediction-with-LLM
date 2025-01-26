@@ -15,7 +15,7 @@ class Parser:
     'User-Agent': 'mvshibanov@edu.hse.ru'
 }
 
-    def __init__(self, years: list[int], quartrs: list[int], save_dir: Path):
+    def __init__(self, years: list[int], quartrs: list[int], raw_files_dir: Path):
         """
         Initializes the Parser instance.
 
@@ -32,7 +32,7 @@ class Parser:
         """
         self.years = years
         self.quartrs = quartrs
-        self.save_dir = save_dir
+        self.save_dir = raw_files_dir
         self.all_lines: list = []
         self.reports_df = pd.DataFrame()
         self.loaded_comapines_set = set()
