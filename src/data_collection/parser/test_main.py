@@ -3,15 +3,15 @@ sys.path.append(r'C:\Users\310\Desktop\Progects_Py\Risk-and-return-prediction-wi
 
 from pathlib import Path
 
-from data_collection.parser.parser_class import Parser
+from data_collection.parser.parser_snp import ParserSnP
 
 def test_main():
-    years: list[int] = [2023, 2022]
-    quartrs: list[int] = [3, 4] 
+    years: list[int] = [2023, ]
+    quartrs: list[int] = [3, ] 
     raw_files_dir: Path = Path(r"C:\Users\310\Desktop\Progects_Py\data\Parsim_sec_data\raw_data\2013_reports")
 
-    parser = Parser(years, quartrs, raw_files_dir)
-    print(parser.get_company_links_object())
+    parser = ParserSnP(years, quartrs, raw_files_dir)
+    print(parser.get_company_links())
 
 if __name__ == "__main__":
     test_main()

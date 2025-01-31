@@ -4,30 +4,28 @@ sys.path.append(r'C:\Users\310\Desktop\Progects_Py\Risk-and-return-prediction-wi
 import time
 from pathlib import Path
 
-from parser import Parser
-from downloader import Downloader
-from converter import Converter
+from data_collection.parser.parser_snp import ParserSnP
+from data_collection.downloader.downloader_class import Downloader
+from data_collection.converter.dictionary_converter import DictionaryConverter
 
 
 start_time = time.time()
 
 def main():
-    years: list[int] = [2013, 2012]
-    quartrs: list[int] = [3, 4] 
+    years: list[int] = [2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018]
+    quartrs: list[int] = [1, 2, 3, 4] 
 
-    raw_files_dir: Path = Path(r"C:\Users\310\Desktop\Progects_Py\data\Parsim_sec_data\raw_data\2013_reports")
-    prepared_files_dir: Path = Path(r"C:\Users\310\Desktop\Progects_Py\data\Parsim_sec_data\prepared_data\2013_reports")
+    raw_files_dir: Path = Path(r"C:\Users\310\Desktop\Progects_Py\data\Parsim_sec_data\raw_data\2009_till_2018_reports")
+    prepared_files_dir: Path = Path(r"C:\Users\310\Desktop\Progects_Py\data\Parsim_sec_data\prepared_data\2009_till_2018_reports")
 
-    parser = Parser(years, quartrs, raw_files_dir)
-    company_links: dict[str, list[dict]] = parser.get_company_links_object()
+    parser = ParserSnP(years, quartrs, raw_files_dir)
+    company_links: dict[str, list[dict]] = parser.get_company_links()
     
     downloader = Downloader(company_links, raw_files_dir)
     downloader.download_files()
 
     converter = DictionaryConverter(raw_files_dir, prepared_files_dir)
     converter.convert_files()
-
-    Converter(save_dir)
 
 if __name__ == "__main__":
     main()
