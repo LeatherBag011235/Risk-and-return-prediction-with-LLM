@@ -1,14 +1,24 @@
 import requests
 import pandas as pd
-import os
 from pathlib import Path
+import logging
+from abc import ABC, abstractmethod
 
-class Parser:
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+
+class Parser(ABC):
     """
     This class is designed to parse and retrieve financial report data from the SEC's EDGAR database. 
-    It downloads index file links for specified years and quarters, extracts relevant 10-K and 10-Q filings, 
-    and filters them for S&P 500 companies. The class provides methods to compile these links into a 
+    It downloads index file links for specified years and quarters, extracts relevant filings. 
+    The class provides methods to compile these links into a 
     structured format for further usage.
+
+    This is a parent abstract class so it provide basic functionality to get fillings from EDGAR databese.
+    It suppose to be extended based on what particular companies and fillings do you want to parse.
     """
     
     headers = {
@@ -35,9 +45,7 @@ class Parser:
         self.save_dir = raw_files_dir
         self.all_lines: list = []
         self.reports_df = pd.DataFrame()
-        self.loaded_comapines_set = set()
-        self.snp_remainings_df = pd.DataFrame()
-        self.snp_quarter_df = pd.DataFrame()
+        self.final_df = pd.DataFrame()
         self.company_links = {}
 
 
@@ -62,6 +70,17 @@ class Parser:
 
         return lines
     
+    def get_all_lines(self) -> list[str]:
+        for year in self.years:
+            for qrt in self.quartrs:
+
+                lines = Parser.download_report(year, qrt)
+
+                self.all_lines.extend(lines)
+                logging.info(f'{year} {qrt}')
+
+        return self.all_lines
+    
     def get_all_links(self):
         """
         Processes self.all_lines (each line from the SEC master index files), splits them, 
@@ -70,6 +89,7 @@ class Parser:
 
         Returns:
          - A pandas DataFrame (self.reports_df) containing the structured data from the parsed lines.
+         It is all links for all fillings for the specified period.
         """
         report_releas_lst = []
 
@@ -77,13 +97,14 @@ class Parser:
             part = line.split('|')
             if len(part) == 5:
                 report_releas_lst.append(part)
-        print(f'All links prepared. the len: {len(report_releas_lst)}')
+
+        logging.info(f'All links prepared. the len: {len(report_releas_lst)}')
 
         self.reports_df = pd.DataFrame(report_releas_lst, columns=['cik', 'name', 'type', 'filed_date', 'file'])
 
         return self.reports_df
 
-    
+    @abstractmethod
     def check_remaining_companies(self) -> set:
         """
         Checks which companies have already been downloaded into self.save_dir by listing 
@@ -92,80 +113,18 @@ class Parser:
         Returns:
          - A set of company identifiers (directory names) that are already present in self.save_dir.
         """
-        downloaded_companies = []
+        pass
 
-        for company_dir in os.listdir(self.save_dir):
-            downloaded_companies.append(company_dir)
-
-        self.loaded_comapines_set = set(downloaded_companies)
-
-        return self.loaded_comapines_set
-
-    def get_snp_cik(self) -> pd.DataFrame:
-        """
-        Reads the S&P 500 companies list from Wikipedia, ensures each CIK (unique identifier)
-        is only taken once, and filters out companies that have already been downloaded.
-        The remaining companies are stored in self.snp_remainings_df.
-
-        Returns:
-         - A pandas DataFrame (self.snp_remainings_df) of remaining S&P 500 companies
-           that have not been downloaded yet.
-        """
-        link = (
-            #"https://en.wikipedia.org/wiki/List_of_S%26P_500_companies#S&P_500_component_stocks"
-            "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        )
-        df = pd.read_html(link, header=0)[0]
-        df = df.astype(str)
-
-        df['Count'] = df.groupby('CIK').cumcount()
-        qnique_cik = df[df['Count'] == 0]
-        snp_str_df = qnique_cik.drop(columns=['Count'])
-
-        mask = snp_str_df['Symbol'].apply(lambda x: x not in self.loaded_comapines_set)
-        self.snp_remainings_df = snp_str_df[mask]
-
-        return self.snp_remainings_df
-    
-    def get_snp_links(self) -> pd.DataFrame:
-        """
-        Filters self.reports_df to include only the filings of type '10-K' or '10-Q'.
-        Then it matches these filings against the S&P 500 companies (self.snp_remainings_df) 
-        by their CIK. The matched entries are stored in self.snp_quarter_df.
-
-        Returns:
-         - A pandas DataFrame (self.snp_quarter_df) containing 10-K/10-Q filings for
-           the remaining S&P 500 companies.
-        """
-        self.reports_df = self.reports_df[self.reports_df['type'].isin(['10-K', '10-Q'])]
-
-        self.snp_remainings_df['CIK'] = pd.to_numeric(self.snp_remainings_df['CIK']).astype(int)
-        self.reports_df['cik'] = pd.to_numeric(self.reports_df['cik']).astype(self.snp_remainings_df['CIK'].dtype)
-
-        self.snp_remainings_df.set_index('CIK', inplace=True)
-
-        snp_quarter_df = self.reports_df.merge(
-            self.snp_remainings_df[['Symbol']],
-            left_on='cik',
-            right_index=True,
-            how='inner'
-        )
-
-        snp_quarter_df.rename(columns={'Symbol': 'ticker'}, inplace=True)
-        self.snp_quarter_df = snp_quarter_df[['ticker', 'cik', 'name', 'type', 'filed_date', 'file']]
-
-        print(f"DataFrame created:\n{self.snp_quarter_df}")
-        return self.snp_quarter_df
     
     @staticmethod
-    def get_links_n_dates(snp_quarter_df: pd.DataFrame, company_name: str) -> list[str]:
+    def get_links_n_dates(final_df: pd.DataFrame, company_name: str) -> list[str]:
         """
         For a given company (specified by ticker), sorts its filings by 'filed_date' in 
         descending order. Returns a list of dictionaries containing the 'page_link' 
         (SEC filing path) and 'filed_date' for each record.
 
         Parameters:
-         - snp_quarter_df (pd.DataFrame): DataFrame containing the relevant filings.
+         - final_df (pd.DataFrame): DataFrame containing the relevant filings.
          - company_name (str): The company's ticker symbol.
 
         Returns:
@@ -173,7 +132,7 @@ class Parser:
         """
         links_n_dates = []
 
-        subset_df = snp_quarter_df[snp_quarter_df['ticker'] == company_name].copy()
+        subset_df = final_df[final_df['ticker'] == company_name].copy()
         subset_df['filed_date'] = pd.to_datetime(subset_df['filed_date'], format='%Y-%m-%d')
 
         sorted_df = subset_df.sort_values(by='filed_date', ascending=False)
@@ -188,14 +147,15 @@ class Parser:
             links_n_dates.append(row_dict)
 
         return links_n_dates
+    
 
     def compile_links(self) -> dict[str, list[dict]]:
         """
-        Iterates over all remaining S&P 500 company tickers in self.snp_quarter_df,
+        Iterates over all remaining company tickers in self.final_df,
         retrieves their sorted filings via get_links_n_dates, and compiles the results
-        into a dictionary (self.company_links_object) where keys are tickers and 
+        into a dictionary (self.company_links) where keys are tickers and 
         values are lists of filing links/dates.
-        Structure of company_links_object:
+        Structure of company_links:
                 {
             "AAPL": [
                 {
@@ -220,50 +180,22 @@ class Parser:
         }
 
         """
-        company_names = self.snp_quarter_df['ticker'].unique()
+        company_names = self.final_df['ticker'].unique()
 
         for company_name in company_names:
 
-            links_n_dates = Parser.get_links_n_dates(self.snp_quarter_df, company_name)
+            links_n_dates = Parser.get_links_n_dates(self.final_df, company_name)
 
             self.company_links[company_name] = links_n_dates
 
-    def get_company_links_object(self) -> dict[str, list[dict]]:
-        """
-        Orchestrates the entire process:
-         - Iterates over self.years and self.quartrs to download the SEC index files.
-         - Calls get_all_links() to structure the downloaded lines into self.reports_df.
-         - Calls check_remaining_companies() to see which companies are already downloaded.
-         - Calls get_snp_cik() to read the S&P 500 list and filter out those already downloaded.
-         - Calls get_snp_links() to match the S&P 500 with the 10-K/10-Q filings.
-         - Calls compile_links() to build a dictionary of company tickers mapped to 
-           their respective filings and dates.
 
+    @abstractmethod
+    def get_company_links(self) -> dict[str, list[dict]]:
+        """
+        Orchestrates the entire process...
+         
         Returns:
          - The compiled dictionary (self.company_links_object) with company tickers 
            mapped to their list of filing links and filing dates.
         """
-        for year in self.years:
-            for qrt in self.quartrs:
-
-                lines = Parser.download_report(year, qrt)
-
-                self.all_lines.extend(lines)
-                print(year, qrt)
-        
-        self.get_all_links()
-
-        self.check_remaining_companies()
-
-        self.get_snp_cik()
-
-        self.get_snp_links()
-
-        self.compile_links()
-
-        return self.company_links
-
-
-
-
-    
+        pass
