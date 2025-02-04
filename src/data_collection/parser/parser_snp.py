@@ -1,14 +1,8 @@
 from pathlib import Path
 import pandas as pd
-import logging
 
+from data_collection.logging_config import logger
 from data_collection.parser.parser_class import Parser
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()]
-)
 
 class ParserSnP(Parser):
 
@@ -30,7 +24,7 @@ class ParserSnP(Parser):
 
         self.save_dir.mkdir(parents=True, exist_ok=True)
         for company_dir in self.save_dir.iterdir():
-            downloaded_companies.append(company_dir)
+            downloaded_companies.append(company_dir.name)
 
         self.loaded_comapines_set = set(downloaded_companies)
 
@@ -91,7 +85,7 @@ class ParserSnP(Parser):
         final_df.rename(columns={'Symbol': 'ticker'}, inplace=True)
         self.final_df = final_df[['ticker', 'cik', 'name', 'type', 'filed_date', 'file']]
 
-        logging.info(f"DataFrame created:\n{self.final_df}")
+        logger.info(f"DataFrame created:\n{self.final_df}")
         return self.final_df
     
     def get_company_links(self) -> dict[str, list[dict]]:

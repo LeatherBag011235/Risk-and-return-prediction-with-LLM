@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from data_collection.parser.parser_snp import ParserSnP
-from data_collection.downloader.downloader_class import Downloader
+from data_collection.downloader.dictionary_downloader import DictionaryDownloader
 from data_collection.converter.dictionary_converter import DictionaryConverter
 
 
@@ -19,9 +19,9 @@ def main():
     prepared_files_dir: Path = Path(r"C:\Users\310\Desktop\Progects_Py\data\Parsim_sec_data\prepared_data\2009_till_2018_reports")
 
     parser = ParserSnP(years, quartrs, raw_files_dir)
-    company_links: dict[str, list[dict]] = parser.get_company_links()
+    company_links: dict[str, list[dict]] = parser.get_company_links ()
     
-    downloader = Downloader(company_links, raw_files_dir)
+    downloader = DictionaryDownloader(company_links, raw_files_dir)
     downloader.download_files()
 
     converter = DictionaryConverter(raw_files_dir, prepared_files_dir)
