@@ -1,17 +1,10 @@
 from pathlib import Path
 import polars as pl
 import re
-import numpy as np
-import logging
 
 from .converter_class import Converter
 from .consts import date_pattern
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()]
-)
+from data_collection.logging_config import logger
 
 class DictionaryConverter(Converter):
 
@@ -23,7 +16,7 @@ class DictionaryConverter(Converter):
     def set_of_sentimen_words(self) -> pl.DataFrame:
         lm_dict = pl.read_csv(r'C:\Users\310\Desktop\Progects_Py\Parsim-sec\src\converter_api\Loughran-McDonald_MasterDictionary_1993-2021.csv')
         hv_dict = pl.read_excel(r'C:\Users\310\Desktop\Progects_Py\Parsim-sec\src\converter_api\Harvard_inquirerbasic.xls')
-        logging.debug(f"Len of lm_dict {len(lm_dict)} \nLen of hv_dict {len(hv_dict)}")
+        logger.debug(f"Len of lm_dict {len(lm_dict)} \nLen of hv_dict {len(hv_dict)}")
 
         positive_words_lm = lm_dict.filter(lm_dict["Positive"] > 0)
         negative_words_lm = lm_dict.filter(lm_dict["Negative"] > 0)
@@ -55,15 +48,15 @@ class DictionaryConverter(Converter):
         return company_dict
     
     def extract_text(self) -> None:
-        logging.debug(f"self.raw_files_dir {self.raw_files_dir}")
+        logger.debug(f"self.raw_files_dir {self.raw_files_dir}")
         for company_dir in self.raw_files_dir.iterdir():
-            logging.debug(f"company_dir {company_dir}")
+            logger.debug(f"company_dir {company_dir}")
 
             if company_dir.is_dir():
                 company_dict: dict[str, list[str]] = {}
 
                 for file_path in company_dir.iterdir():
-                    logging.debug(f"file_path {file_path}")
+                    logger.debug(f"file_path {file_path}")
                     df = pl.read_parquet(file_path)
                     doc_len = df.shape[0]
 
@@ -82,20 +75,21 @@ class DictionaryConverter(Converter):
         for company_name, company_dict in self.dict_with_all_companies.items():
             df = pl.DataFrame(company_dict)
 
+            self.prepared_files_dir.mkdir(parents=True, exist_ok=True)
             file_name_new = f"{company_name}_reports.parquet"
             full_path = self.prepared_files_dir / file_name_new
 
-            logging.debug(f"company_name: {company_name}")
-            logging.debug(f"full_path: {full_path}")
+            logger.debug(f"company_name: {company_name}")
+            logger.debug(f"full_path: {full_path}")
 
             df.write_parquet(full_path)
-            logging.info(f"{company_name} is saved successfully")
+            logger.info(f"{company_name} is saved successfully")
 
     def convert_files(self) -> None:
         self.set_of_sentimen_words()
 
         self.extract_text()
-        logging.debug(f".extract_text() has been executed")
+        logger.debug(f".extract_text() has been executed")
 
         self.save_text()
-        logging.debug(f".save_text() has been executed")
+        logger.debug(f".save_text() has been executed")

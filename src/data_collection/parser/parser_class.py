@@ -4,11 +4,7 @@ from pathlib import Path
 import logging
 from abc import ABC, abstractmethod
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()]
-)
+from data_collection.logging_config import logger
 
 class Parser(ABC):
     """
@@ -77,7 +73,7 @@ class Parser(ABC):
                 lines = Parser.download_report(year, qrt)
 
                 self.all_lines.extend(lines)
-                logging.info(f'{year} {qrt}')
+                logger.info(f'{year} {qrt}')
 
         return self.all_lines
     
@@ -98,7 +94,7 @@ class Parser(ABC):
             if len(part) == 5:
                 report_releas_lst.append(part)
 
-        logging.info(f'All links prepared. the len: {len(report_releas_lst)}')
+        logger.info(f'All links prepared. the len: {len(report_releas_lst)}')
 
         self.reports_df = pd.DataFrame(report_releas_lst, columns=['cik', 'name', 'type', 'filed_date', 'file'])
 

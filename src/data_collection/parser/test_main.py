@@ -11,7 +11,9 @@ def test_main():
     raw_files_dir: Path = Path(r"C:\Users\310\Desktop\Progects_Py\data\Parsim_sec_data\raw_data\2013_reports")
 
     parser = ParserSnP(years, quartrs, raw_files_dir)
-    print(parser.get_company_links())
+    
+    print(len(parser.get_company_links()))
+    print(parser.check_remaining_companies())
 
 if __name__ == "__main__":
     test_main()
