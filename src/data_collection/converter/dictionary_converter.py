@@ -70,6 +70,7 @@ class DictionaryConverter(Converter):
                     company_dict[date_and_len] = report_lst
 
                 self.dict_with_all_companies[company_dir.name] = DictionaryConverter.make_texts_same_len(company_dict)
+                logger.info(f"Company {company_dir.name} is extructed sucsessfuly")
 
     def save_text(self) -> None:
         for company_name, company_dict in self.dict_with_all_companies.items():
