@@ -15,7 +15,7 @@ class DictionaryConverter(Converter):
 
     def set_of_sentimen_words(self) -> pl.DataFrame:
         lm_dict = pl.read_csv(r'C:\Users\310\Desktop\Progects_Py\Parsim-sec\src\converter_api\Loughran-McDonald_MasterDictionary_1993-2021.csv')
-        hv_dict = pl.read_excel(r'C:\Users\310\Desktop\Progects_Py\Parsim-sec\src\converter_api\Harvard_inquirerbasic.xls')
+        hv_dict = pl.read_csv(r'C:\Users\310\Desktop\Progects_Py\Parsim-sec\src\converter_api\Harvard_inquirerbasic.csv')
         logger.debug(f"Len of lm_dict {len(lm_dict)} \nLen of hv_dict {len(hv_dict)}")
 
         positive_words_lm = lm_dict.filter(lm_dict["Positive"] > 0)
@@ -50,7 +50,6 @@ class DictionaryConverter(Converter):
     def extract_text(self) -> None:
         logger.debug(f"self.raw_files_dir {self.raw_files_dir}")
         for company_dir in self.raw_files_dir.iterdir():
-            logger.debug(f"company_dir {company_dir}")
 
             if company_dir.is_dir():
                 company_dict: dict[str, list[str]] = {}
@@ -58,6 +57,7 @@ class DictionaryConverter(Converter):
                 for file_path in company_dir.iterdir():
                     logger.debug(f"file_path {file_path}")
                     df = pl.read_parquet(file_path)
+                    logger.debug(f"{df}")
                     doc_len = df.shape[0]
 
                     df = df.join(self.sentiment_words, on='column_0', how='inner')
@@ -79,8 +79,8 @@ class DictionaryConverter(Converter):
             file_name_new = f"{company_name}_reports.parquet"
             full_path = self.prepared_files_dir / file_name_new
 
-            logger.debug(f"company_name: {company_name}")
             logger.debug(f"full_path: {full_path}")
+            logger.debug(f"prepared df {df}")
 
             df.write_parquet(full_path)
             logger.info(f"{company_name} is saved successfully")
