@@ -8,7 +8,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from .consts import start_pattern, steart_pattern_reserve, end_pattern
 from data_collection.logging_config import logger
 
-
 class Downloader(ABC):
     """
     Downloader class to scrape, process, and save financial reports from SEC archives.
