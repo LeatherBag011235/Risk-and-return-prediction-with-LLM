@@ -21,7 +21,7 @@ class Parser(ABC):
     'User-Agent': 'mvshibanov@edu.hse.ru'
 }
 
-    def __init__(self, years: list[int], quartrs: list[int], raw_files_dir: Path):
+    def __init__(self, years: list[int], quartrs: list[int], raw_files_dir: Path=None):
         """
         Initializes the Parser instance.
 
@@ -88,12 +88,11 @@ class Parser(ABC):
          It is all links for all fillings for the specified period.
         """
         report_releas_lst = []
-
+ 
         for line in self.all_lines:
             part = line.split('|')
             if len(part) == 5:
                 report_releas_lst.append(part)
-
         logger.info(f'All links prepared. the len: {len(report_releas_lst)}')
 
         self.reports_df = pd.DataFrame(report_releas_lst, columns=['cik', 'name', 'type', 'filed_date', 'file'])
