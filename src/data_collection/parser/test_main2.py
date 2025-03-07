@@ -4,7 +4,7 @@ sys.path.append(r'C:\Users\Maxim Shibanov\Projects_Py\Risk-and-return-prediction
 from data_collection.parser.parser_total import ParserTotal
 
 years: list[int] = [2023, ]
-quartrs: list[int] = [3, 4,] 
+quartrs: list[int] = [3,] 
 
 DB_PARAMS = {
     "dbname": "reports_db",
@@ -16,12 +16,7 @@ DB_PARAMS = {
 
 def test_main():
     parser = ParserTotal(years, quartrs, db_params=DB_PARAMS,)
-    parser.get_all_lines()           # Fetch all raw SEC lines
-    parser.get_all_links()         # Process them into a DataFrame
-    parser.filter_type()             # Filters out all filings of the wrong type from self.reports_df
-    parser.check_remaining_companies()
-    parser.filter_existing_entries() # Filter out all filings that are already in database
-    parser.store_reports_in_db()
+    parser.get_company_links()
 
 if __name__ == "__main__":
     test_main()
