@@ -20,6 +20,7 @@ class Parser(ABC):
     headers = {
     'User-Agent': 'mvshibanov@edu.hse.ru'
 }
+    SEC_CIK_TICKER_URL = "https://www.sec.gov/files/company_tickers.json"
 
     def __init__(self, years: list[int], quartrs: list[int], raw_files_dir: Path=None):
         """
