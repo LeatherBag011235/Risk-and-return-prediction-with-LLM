@@ -1,6 +1,5 @@
 from pathlib import Path
 from bs4 import BeautifulSoup
-import unidecode
 import re
 import polars as pl
 import requests
@@ -33,21 +32,6 @@ class DictionaryDownloader(Downloader):
         for a in soup.find_all("a"):
             a.decompose()
         return soup
-    
-
-    @staticmethod
-    def text_preprocessing(soup: BeautifulSoup) -> str:
-        """
-        Extract and normalize text content from the HTML.
-
-        Args:
-            soup (BeautifulSoup): Parsed HTML content.
-
-        Returns:
-            str: Normalized text content.
-        """
-        text = soup.get_text()
-        return unidecode.unidecode(text)
     
     @staticmethod
     def clean_text(text: str) -> str:
