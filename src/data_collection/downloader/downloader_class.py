@@ -4,8 +4,11 @@ import time
 from pathlib import Path
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import unidecode
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-from .consts import start_pattern, steart_pattern_reserve, end_pattern
+from .consts import start_pattern, start_pattern_reserve, end_pattern
 from data_collection.logging_config import logger
 
 class Downloader(ABC):
@@ -22,7 +25,7 @@ class Downloader(ABC):
     'User-Agent': 'mvshibanov@edu.hse.ru'
 }
 
-    def __init__(self, company_links: dict[str, list[dict]], raw_files_dir: Path):
+    def __init__(self, company_links: dict[str, list[dict]]=None, raw_files_dir: Path=None):
         """
         Args:
             company_links (dict[str, list[dict]]): Structure containing company tickers and their filing metadata.
@@ -56,7 +59,6 @@ class Downloader(ABC):
         self.company_links = company_links
         self.save_dir = raw_files_dir
 
-
     @staticmethod
     def get_soup(session: requests.Session, company_name: str, url: str) -> BeautifulSoup:
         """
@@ -87,7 +89,7 @@ class Downloader(ABC):
                     start_idx = start_match.end()
                 else:
                     logger.info(f"Failed to find start index in {company_name} ==> {full_url}. Using fallback pattern.")
-                    start_match = steart_pattern_reserve.search(content)
+                    start_match = start_pattern_reserve.search(content)
 
                     if start_match:
                         start_idx = start_match.end()
@@ -114,6 +116,37 @@ class Downloader(ABC):
 
         logger.error(f"All attempts failed for {company_name} ==> {full_url}")
         return None
+    
+    @staticmethod
+    def create_session():
+        """
+        Creates a requests.Session() with an increased connection pool limit.
+        """
+        session = requests.Session()
+        
+        # Configure the adapter to increase the pool size
+        adapter = HTTPAdapter(
+            pool_connections=50,  # Increase max connections
+            pool_maxsize=50,  # Max simultaneous requests
+            max_retries=Retry(total=5, backoff_factor=1.5)  # Retry failed requests
+        )
+        
+        session.mount("https://", adapter)
+        return session
+    
+    @staticmethod
+    def text_preprocessing(soup: BeautifulSoup) -> str:
+        """
+        Extract and normalize text content from the HTML.
+
+        Args:
+            soup (BeautifulSoup): Parsed HTML content.
+
+        Returns:
+            str: Normalized text content.
+        """
+        text = soup.get_text()
+        return unidecode.unidecode(text)
     
     @abstractmethod
     def save_file(self):

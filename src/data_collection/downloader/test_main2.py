@@ -1,10 +1,9 @@
 import sys 
 sys.path.append(r'C:\Users\Maxim Shibanov\Projects_Py\Risk-and-return-prediction-with-LLM\src')
 
-from data_collection.parser.parser_total import ParserTotal
+from pathlib import Path
 
-years: list[int] = [2018, 2019, 2020, 2021, 2022, 2023, 2024]
-quartrs: list[int] = [1, 2, 3, 4] 
+from data_collection.downloader.total_downloader import TotalDownloader
 
 DB_PARAMS = {
     "dbname": "reports_db",
@@ -15,8 +14,8 @@ DB_PARAMS = {
 }
 
 def test_main():
-    parser = ParserTotal(years, quartrs, db_params=DB_PARAMS,)
-    parser.get_company_links()
+    downloader = TotalDownloader(DB_PARAMS)
+    downloader.download_files() 
 
 if __name__ == "__main__":
     test_main()
