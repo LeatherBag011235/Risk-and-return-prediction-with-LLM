@@ -4,6 +4,8 @@ from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import polars as pl
+from pathlib import Path
 
 class MirrorDict:
     """
@@ -31,6 +33,8 @@ class MirrorDict:
         self.set_neg = set_neg
         self.session = MirrorDict.create_session()  # Use a session for persistent connections
         self.base_url = "https://www.dictionaryapi.com/api/v3/references/thesaurus/json"
+        self.alter_set_pos = set()
+        self.alter_set_neg = set()
 
     def retrieve_syns(self, word: str) -> list[str]:
         """
@@ -145,11 +149,36 @@ class MirrorDict:
         print(f"Processed set. Resulting length: {len(alter_set)}")
         return alter_set
     
-    def create_mirror_dict(self) -> tuple[set[str], set[str]]:
+    def create_mirror_dict(self, file_path: Path) -> pl.DataFrame:
         """
-        Creates a mirrored dictionary for both positive and negative word sets.
+        Creates a mirrored dictionary for both positive and negative word sets,
+        stores it in a Polars DataFrame, and saves it as a Parquet file if the parent 
+        directory exists.
+
+        Args:
+            file_path (Path): The file path where the DataFrame will be saved as a Parquet file.
 
         Returns:
-            tuple[set[str], set[str]]: The modified positive and negative word sets.
+            pl.DataFrame: A Polars DataFrame containing all words with a boolean column 
+                          indicating whether they are positive (`True`) or negative (`False`).
+        Raises:
+            FileNotFoundError: If the parent directory of `file_path` does not exist.
         """
-        return self.create_mirror_set(self.set_pos), self.create_mirror_set(self.set_neg)
+        self.alter_set_pos = self.create_mirror_set(self.set_pos)
+        self.alter_set_neg = self.create_mirror_set(self.set_neg)
+
+        words = list(self.alter_set_pos) + list(self.alter_set_neg)
+        positivity = [True] * len(self.alter_set_pos) + [False] * len(self.alter_set_neg)
+
+        df = pl.DataFrame({
+            "word": words,
+            "positive": positivity
+        })
+
+        if not file_path.parent.exists():
+            raise FileNotFoundError(f"Directory does not exist: {file_path.parent}")
+
+        df.write_parquet(file_path)
+
+        return df
+
