@@ -3,8 +3,7 @@ sys.path.append(r'C:\Users\310\Desktop\Progects_Py\Risk-and-return-prediction-wi
 
 from pathlib import Path
 
-from data_collection.parser.parser_snp import ParserSnP
-from data_collection.downloader.dictionary_downloader import DictionaryDownloader
+from data_collection.text_collection.downloader.dictionary_downloader import DictionaryDownloader
 
 def test_main():
     years: list[int] = [2013]

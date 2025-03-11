@@ -3,7 +3,7 @@ sys.path.append(r'C:\Users\Maxim Shibanov\Projects_Py\Risk-and-return-prediction
 
 from pathlib import Path
 
-from data_collection.parser.parser_snp import ParserSnP
+from data_collection.text_collection.parser.parser_snp import ParserSnP
 
 def test_main():
     years: list[int] = [2023, ]

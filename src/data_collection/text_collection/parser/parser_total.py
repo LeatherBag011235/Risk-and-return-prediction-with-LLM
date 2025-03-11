@@ -2,7 +2,7 @@ import pandas as pd
 import requests
 import psycopg2
 
-from data_collection.parser.parser_class import Parser  
+from .parser_class import Parser  
 from data_collection.logging_config import logger  
 
 class ParserTotal(Parser):
@@ -49,7 +49,6 @@ class ParserTotal(Parser):
             cursor.close()
             conn.close()
 
-            # Convert to DataFrame
             existing_df = pd.DataFrame(existing_entries, columns=['cik', 'filed_date'])
 
             existing_df['cik'] = existing_df['cik'].astype(str)
@@ -59,7 +58,7 @@ class ParserTotal(Parser):
             return existing_df
 
         except Exception as e:
-            logger.error(f"❌ Database error in `get_existing_entries()`: {e}")
+            logger.error(f"❌ Database error in `check_remaining_companies()`: {e}")
             return pd.DataFrame(columns=['cik', 'filed_date'])  
         
     def filter_existing_entries(self) -> pd.DataFrame:
@@ -74,6 +73,10 @@ class ParserTotal(Parser):
             if existing_df.empty:
                 logger.info("✅ No existing reports found, keeping all entries.")
                 return 
+            
+            logger.debug(f"Unique dates in reports_df: {self.reports_df['filed_date'].unique()}")
+            logger.debug(f"Unique dates in existing_df: {existing_df['filed_date'].unique()}")
+
             
             before_count = len(self.reports_df)
            
@@ -133,6 +136,12 @@ class ParserTotal(Parser):
             how="inner"
             )
         
+        unique_count = self.reports_df[['cik', 'filed_date']].drop_duplicates().shape[0]
+        total_count = self.reports_df.shape[0]
+        
+        logger.debug(f"📊 Total rows in self.reports_df: {total_count}")
+        logger.debug(f"📊 Unique (cik, filed_date) pairs: {unique_count}")
+        
         logger.debug(f"NANS: {self.reports_df["ticker"].isna().sum()}")
 
         return self.reports_df[['cik', 'ticker', 'filed_date']]
@@ -159,9 +168,17 @@ class ParserTotal(Parser):
                 cursor.execute("""
                     INSERT INTO reports (cik, filed_date, report_type, url, raw_text)
                     VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (cik, filed_date) DO NOTHING;
-                """, (cik, filed_date, report_type, file_url, None))  # No raw_text yet
+                    ON CONFLICT (cik, filed_date) DO NOTHING
+                    RETURNING cik, filed_date;
+                """, (cik, filed_date, report_type, file_url, None))
 
+                inserted_row = cursor.fetchone()
+
+                if inserted_row:
+                    logger.info(f"✅ Inserted report for CIK {cik} on {filed_date}.")
+                else:
+                    #logger.debug(f"Skipped report for CIK {cik} on {filed_date} due to conflict.")
+                    pass
             conn.commit()
             cursor.close()
             conn.close()
