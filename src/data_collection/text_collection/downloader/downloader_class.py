@@ -126,8 +126,8 @@ class Downloader(ABC):
         
         # Configure the adapter to increase the pool size
         adapter = HTTPAdapter(
-            pool_connections=50,  # Increase max connections
-            pool_maxsize=50,  # Max simultaneous requests
+            pool_connections=35,  # Increase max connections
+            pool_maxsize=35,  # Max simultaneous requests
             max_retries=Retry(total=5, backoff_factor=1.5)  # Retry failed requests
         )
         

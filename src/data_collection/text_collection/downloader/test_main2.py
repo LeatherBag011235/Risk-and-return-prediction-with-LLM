@@ -3,7 +3,7 @@ sys.path.append(r'C:\Users\Maxim Shibanov\Projects_Py\Risk-and-return-prediction
 
 from pathlib import Path
 
-from data_collection.downloader.total_downloader import TotalDownloader
+from data_collection.text_collection.downloader.total_downloader import TotalDownloader
 
 DB_PARAMS = {
     "dbname": "reports_db",
