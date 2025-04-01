@@ -1,0 +1,19 @@
+name: vllm_env
+channels:
+  - nvidia
+  - pytorch
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pytorch=2.1.0
+  - torchvision=0.16.0
+  - torchaudio=2.1.0
+  - pytorch-cuda=12.1
+  - numpy
+  - sentencepiece
+  - pip
+  - pip:
+      - vllm==0.8.1
+      - transformers
+      - accelerate
+      - bitsandbytes
