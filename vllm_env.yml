@@ -17,3 +17,4 @@ dependencies:
       - transformers
       - accelerate
       - bitsandbytes
+      - psycopg2-binary 
