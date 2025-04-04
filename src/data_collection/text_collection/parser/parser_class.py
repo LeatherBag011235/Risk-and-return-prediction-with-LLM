@@ -4,7 +4,7 @@ from pathlib import Path
 import logging
 from abc import ABC, abstractmethod
 
-from data_collection.logging_config import logger
+from src.data_collection.logging_config import logger
 
 class Parser(ABC):
     """

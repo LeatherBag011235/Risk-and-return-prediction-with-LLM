@@ -1,6 +1,3 @@
-import sys 
-sys.path.append(r'C:\Users\Maxim Shibanov\Projects_Py\Risk-and-return-prediction-with-LLM\src')
-
 from data_collection.text_collection.downloader.total_downloader import TotalDownloader
 
 DB_PARAMS = {

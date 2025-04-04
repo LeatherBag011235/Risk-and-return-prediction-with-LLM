@@ -3,7 +3,7 @@ import requests
 import psycopg2
 
 from .parser_class import Parser  
-from data_collection.logging_config import logger  
+from src.data_collection.logging_config import logger  
 
 class ParserTotal(Parser):
     """
@@ -142,7 +142,7 @@ class ParserTotal(Parser):
         logger.debug(f"📊 Total rows in self.reports_df: {total_count}")
         logger.debug(f"📊 Unique (cik, filed_date) pairs: {unique_count}")
         
-        logger.debug(f"NANS: {self.reports_df["ticker"].isna().sum()}")
+        logger.debug(f"NANS: {self.reports_df['ticker'].isna().sum()}")
 
         return self.reports_df[['cik', 'ticker', 'filed_date']]
     

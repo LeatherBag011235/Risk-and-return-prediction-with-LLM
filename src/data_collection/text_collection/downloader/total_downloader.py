@@ -1,3 +1,4 @@
+from typing import Optional
 import datetime
 import requests
 import psycopg2
@@ -5,7 +6,7 @@ from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .downloader_class import Downloader
-from data_collection.logging_config import logger
+from src.data_collection.logging_config import logger
 
 class TotalDownloader(Downloader):
 
@@ -19,18 +20,43 @@ class TotalDownloader(Downloader):
         self.db_params = db_params
         self.pending_reports = []
 
-    def get_pending_reports(self) -> list[tuple[str, datetime.date, str]]: 
-        """Fetches reports that haven't been downloaded yet.
+    def get_pending_reports(
+        self, 
+        ticker_list: Optional[list[str]] = None, 
+        cik_list: Optional[list[str]] = None
+    ) -> list[tuple[str, datetime.date, str]]:
+        """
+        Fetches reports that haven't been downloaded yet, with optional filtering by ticker or CIK.
+
+        Args:
+            ticker_list (Optional[list[str]]): List of tickers to filter by.
+            cik_list (Optional[list[str]]): List of CIKs to filter by.
 
         Returns:
-            list[tuple[str, datetime, str]]: List of (CIK, filed_date, URL) tuples.
+            list[tuple[str, datetime.date, str]]: List of (CIK, filed_date, URL) tuples.
         """
         try:
             conn = psycopg2.connect(**self.db_params)
             cursor = conn.cursor()
 
-            cursor.execute("SELECT cik, filed_date, url FROM reports WHERE raw_text IS NULL;")
-            self.pending_reports = cursor.fetchall()  # List of (cik: str, filed_date: datetime, url: str)
+            base_query = "SELECT cik, filed_date, url FROM reports"
+            joins = ""
+            conditions = ["raw_text IS NULL"]
+            params = []
+
+            if ticker_list:
+                joins += " JOIN companies ON reports.cik = companies.cik"
+                conditions.append("companies.ticker = ANY(%s)")
+                params.append(ticker_list)
+
+            if cik_list:
+                conditions.append("reports.cik = ANY(%s)")
+                params.append(cik_list)
+
+            query = f"{base_query}{joins} WHERE {' AND '.join(conditions)};"
+            cursor.execute(query, params)
+
+            self.pending_reports = cursor.fetchall()
 
             cursor.close()
             conn.close()
@@ -89,11 +115,15 @@ class TotalDownloader(Downloader):
         else:
             logger.warning(f"{cik} filing {date} has less than 10,000 characters. Not saved.")
 
-    def download_files(self) -> None:
+    def download_files(
+            self,
+            ticker_list: Optional[list[str]] = None, 
+            cik_list: Optional[list[str]] = None
+            ) -> None:
         """
         Download and process all files using parallel processing.
         """
-        self.get_pending_reports()
+        self.get_pending_reports(ticker_list, cik_list)
         total_reports = len(self.pending_reports)
         session = TotalDownloader.create_session()
 
