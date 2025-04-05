@@ -6,8 +6,14 @@ import psycopg2
 from typing import Optional, Union
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
+from src.data_collection.logging_config import logger 
+
 
 class ModelTester:
+    """
+    A utility class for testing causal language models on financial reports.
+    Provides functionality for scoring, token probability inspection, and text generation.
+    """
 
     default_verbolizer = {
         "positive": [
@@ -21,37 +27,29 @@ class ModelTester:
             "investigate", "sold", "decline", "Monitor", "assess",
             "sale", "remove", "seriously"
         ],
-        }
+    }
 
-    def __init__(self, model_name: str, model: AutoModelForCausalLM, device: str = "auto",
+    def __init__(self, model_name: str, model: AutoModelForCausalLM,
                  prompt: Optional[str] = None,
                  verbolizer: Optional[dict] = None):
         """
-        Initializes the ModelTester with model name, model object, device specification,
-        default prompt, and default verbolizer.
+        Initializes the ModelTester with model, tokenizer, default prompt, and verbolizer.
 
         Args:
-            model_name (str): Name of the HuggingFace model.
-            model (AutoModelForCausalLM): Preloaded model object.
-            device (str): Target device for model and tensors ("cuda", "cpu", or "auto").
-            default_prompt (str, optional): Default prompt to append to inputs.
-            verbolizer (dict, optional): Dictionary of positive/negative words for scoring.
+            model_name (str): HuggingFace model name for tokenizer loading.
+            model (AutoModelForCausalLM): Pre-initialized transformer model.
+            prompt (str, optional): Default prompt to append to inputs.
+            verbolizer (dict, optional): Custom word lists for scoring.
         """
         self.model_name = model_name
         self.model = model
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-        #if device == "auto":
-        #    self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        #    self.device_map = "auto"
-        #else:
-        #    self.device = device
-        #    self.device_map = {"": device}
+        self.device = next(model.parameters()).device.type
 
         self.default_prompt = prompt or "Based on this financial report my investment advice is to"
 
         self.verbolizers = [self.default_verbolizer]
-
         if verbolizer:
             self.verbolizers.append(verbolizer)
 
@@ -59,7 +57,6 @@ class ModelTester:
             valid_verbolizer = self.create_verbolizer(base_words)
             self.verbolizers[ind] = valid_verbolizer
 
-        # Initialize valid token mask
         vocab_size = len(self.tokenizer.get_vocab())
         all_tokens = torch.arange(vocab_size, device=self.device)
         decoded_tokens = self.tokenizer.batch_decode(all_tokens.unsqueeze(1))
@@ -74,13 +71,13 @@ class ModelTester:
 
     def clean_report(self, report: str) -> str:
         """
-        Cleans the input report by removing excess whitespace while preserving table structure.
+        Cleans raw financial reports while preserving table formatting.
 
         Args:
-            report (str): Raw report text.
+            report (str): Raw report string.
 
         Returns:
-            str: Cleaned report text.
+            str: Cleaned and formatted report string.
         """
         lines = report.split("\n")
         cleaned_lines = []
@@ -94,20 +91,19 @@ class ModelTester:
 
     def split_and_tokenize_report(self, report: str, max_tokens: int = 3800, overlap_ratio: float = 0.2) -> dict:
         """
-        Splits a cleaned report into overlapping tokenized segments suitable for model inference.
+        Splits a cleaned report into overlapping tokenized segments.
 
         Args:
             report (str): Cleaned report text.
             max_tokens (int): Max tokens per segment.
-            overlap_ratio (float): Overlap ratio for segment continuation.
+            overlap_ratio (float): Overlap between segments.
 
         Returns:
-            dict: Dictionary mapping segment labels to tokenized tensors.
+            dict: Mapping of segment names to tokenized tensors.
         """
         cleaned_report = self.clean_report(report)
-
-        tokens = self.tokenizer(cleaned_report, return_tensors="pt")['input_ids'].squeeze()
-        prompt_tokens = self.tokenizer(self.default_prompt, return_tensors="pt")['input_ids'].squeeze()
+        tokens = self.tokenizer(cleaned_report, return_tensors="pt")['input_ids'].squeeze().to(self.device)
+        prompt_tokens = self.tokenizer(self.default_prompt, return_tensors="pt")['input_ids'].squeeze().to(self.device)
 
         token_segments = {}
         start = 0
@@ -116,7 +112,7 @@ class ModelTester:
 
         while start < len(tokens):
             end = min(start + max_tokens, len(tokens))
-            segment_tokens = torch.cat((tokens[start:end], prompt_tokens), dim=0).to("cpu")
+            segment_tokens = torch.cat((tokens[start:end], prompt_tokens), dim=0).to(self.device)
             token_segments[f"Segment_{segment_index}"] = segment_tokens
             start += max_tokens - overlap_tokens
             segment_index += 1
@@ -125,13 +121,13 @@ class ModelTester:
 
     def fast_inference(self, tokens: torch.Tensor) -> dict:
         """
-        Runs a forward pass to compute probability distribution over allowed next tokens.
+        Runs inference and returns next-token probabilities for valid tokens.
 
         Args:
             tokens (torch.Tensor): Tokenized input segment.
 
         Returns:
-            dict: Dictionary mapping allowed token strings to their probabilities.
+            dict: Mapping of token strings to probability values.
         """
         try:
             inputs = {"input_ids": tokens.unsqueeze(0).to(self.device)}
@@ -160,15 +156,15 @@ class ModelTester:
 
     def generate_text(self, text: Optional[str] = None, custom_prompt: Optional[str] = None, max_new_tokens: int = 64) -> str:
         """
-        Generates text completion from a given or random report.
+        Generates a continuation based on given text and a prompt.
 
         Args:
-            text (str, optional): Custom report text. If None, randomly selected.
-            custom_prompt (str, optional): Prompt to append. If None, uses default.
+            text (str): Input text (optional).
+            custom_prompt (str): Custom prompt (optional).
             max_new_tokens (int): Number of tokens to generate.
 
         Returns:
-            str: Generated text continuation.
+            str: Generated continuation text.
         """
         if not text:
             text = self.get_random_reports()[0]
@@ -180,21 +176,20 @@ class ModelTester:
             outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
-                pad_token_id=self.tokenizer.eos_token_id  # prevent pad warning
+                pad_token_id=self.tokenizer.eos_token_id
             )
         generated_tokens = outputs[0, inputs["input_ids"].shape[1]:]
         return self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
     def get_score(self, token_prob_dict: dict,) -> float:
         """
-        Computes sentiment scores using verbolizers (default and provided[Optional]).
+        Computes sentiment score from token probability dictionary.
 
         Args:
-            token_prob_dict (dict): Token probability distribution.
-            verbolizers (list[dict]): List of dictionaries with two keys "positive" and "negative".
+            token_prob_dict (dict): Token-probability pairs.
 
         Returns:
-            list[float]: List of sentiment scores computed as follows: score = P(positive) - P(negative).
+            float: Sentiment score (P(positive) - P(negative)).
         """
         scores = []
 
@@ -205,14 +200,16 @@ class ModelTester:
             scores.append(score)
 
         return scores
-    
 
     def compute_sample_scores(self, text: Optional[str] = None) -> list[float]:
         """
-        Computes and prints sentiment scores for a randomly selected report.
+        Computes scores for each tokenized segment of a report.
 
         Args:
-            verbolizer (dict, optional): Custom word scoring dictionary.
+            text (str): Report text (optional).
+
+        Returns:
+            list[float]: Scores for each segment.
         """
         if not text:
             text = self.get_random_reports()[0]
@@ -221,14 +218,17 @@ class ModelTester:
         tokenized_segments = self.split_and_tokenize_report(clean_text)
 
         self.sample_scores = []
-        print(f"There are {len(tokenized_segments)} segments of {len(tokenized_segments['Segment_1'])} len")
+
+        logger.debug(f"There are {len(tokenized_segments)} segments of {len(tokenized_segments['Segment_1'])} len")
         for segment_name, tokens in tokenized_segments.items():
-            print(f"Processing {segment_name}...")
+            logger.debug(f"Processing {segment_name}...")
+
             tokens = tokens.to(self.device)
             token_prob_dict = self.fast_inference(tokens)
-            print("token_prob_dict is ready")
+
+            logger.debug(f"token_prob_dict is ready")
             sample_score = self.get_score(token_prob_dict,)
-            print(sample_score)
+            logger.debug(sample_score)
 
             self.sample_scores.append(sample_score)
 
@@ -242,18 +242,11 @@ class ModelTester:
 
     def see_pmf(self, text: str | None, top_k_tokens: int = 20):
         """
-        Displays the top-k token probabilities from the model's next-token distribution.
-
-        This method runs inference on a given text (or a randomly fetched financial report if `text` is None),
-        computes the probability distribution over all allowed tokens (filtered to exclude punctuation, digits, etc.),
-        and prints the top-k tokens with their associated probabilities.
+        Displays the top-k most probable tokens based on model output.
 
         Args:
-            text (str | None): Optional custom input text. If None, a random financial report will be fetched.
-            top_k_tokens (int): Number of top probable tokens to display from the model's output.
-
-        Returns:
-            None. Prints the results directly.
+            text (str): Optional input report.
+            top_k_tokens (int): Number of top tokens to display.
         """
         if not text:
             text = self.get_random_reports()[0]
@@ -261,7 +254,7 @@ class ModelTester:
         tokens = self.tokenizer(text, return_tensors="pt")["input_ids"].squeeze().to(self.device)
 
         token_prob_dict = self.fast_inference(tokens)
-    
+
         sorted_token_probs = {k: v for k, v in sorted(token_prob_dict.items(), key=lambda item: item[1], reverse=True)}
         print("\n🔹 **Next Token Prediction Probabilities (Only Meaningful Words):**")
         for token, prob in list(sorted_token_probs.items())[:top_k_tokens]:  
@@ -269,14 +262,14 @@ class ModelTester:
 
     def get_random_reports(self, n: int = 1, seed: int = 42) -> list[str]:
         """
-        Retrieves `n` random financial reports with non-null raw_text from the PostgreSQL database.
+        Fetches n random financial reports from a local PostgreSQL DB.
 
         Args:
-            n (int): Number of reports to retrieve.
-            seed (int): Random seed for reproducibility.
+            n (int): Number of reports.
+            seed (int): Seed for sampling.
 
         Returns:
-            list[str]: List of raw report texts.
+            list[str]: Fetched raw report strings.
         """
         conn = psycopg2.connect(
             dbname="reports_db",
@@ -287,7 +280,6 @@ class ModelTester:
         )
         try:
             with conn.cursor() as cur:
-                # Get all IDs where raw_text is not null
                 cur.execute("SELECT id FROM reports WHERE raw_text IS NOT NULL;")
                 valid_ids = [row[0] for row in cur.fetchall()]
 
@@ -312,14 +304,13 @@ class ModelTester:
     @staticmethod
     def create_verbolizer(base_words: dict[str: str]) -> dict[str: str]:
         """
-        Constructs a dictionary of lower- and capitalized sentiment keywords.
+        Converts word list dict into lowercase+capitalized variants.
 
         Args:
-            base_words (dict[str: str]): Dictionary with two keys "positive" and "negative". 
-            As values they contain tokens corresponding to sentiment modals.
+            base_words (dict): Words under "positive" and "negative" keys.
 
         Returns:
-            dict: A dict with 'positive' and 'negative' mapped to keyword variants.
+            dict: Expanded keyword list for scoring.
         """
         positive_words = list(map(str.lower, base_words["positive"]))
         negative_words = list(map(str.lower, base_words["negative"]))
@@ -327,8 +318,3 @@ class ModelTester:
             "positive": [w.capitalize() for w in positive_words] + positive_words,
             "negative": [w.capitalize() for w in negative_words] + negative_words,
         }
-    
-    
-
-
-
