@@ -1,4 +1,6 @@
+import time 
 import gc
+from tqdm import tqdm
 import random
 import re
 import torch
@@ -9,9 +11,9 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from src.data_collection.logging_config import logger 
 
 
-class ModelTester:
+class ModelDriver:
     """
-    A utility class for testing causal language models on financial reports.
+    A utility class for inferencing causal language models on financial reports.
     Provides functionality for scoring, token probability inspection, and text generation.
     """
 
@@ -89,7 +91,7 @@ class ModelTester:
                 cleaned_lines.append(cleaned_line)
         return "\n".join(cleaned_lines)
 
-    def split_and_tokenize_report(self, report: str, max_tokens: int = 3800, overlap_ratio: float = 0.2) -> dict:
+    def split_and_tokenize_report(self, report: str, max_tokens: int = 7989, overlap_ratio: float = 0.2) -> dict:
         """
         Splits a cleaned report into overlapping tokenized segments.
 
@@ -113,6 +115,7 @@ class ModelTester:
         while start < len(tokens):
             end = min(start + max_tokens, len(tokens))
             segment_tokens = torch.cat((tokens[start:end], prompt_tokens), dim=0).to(self.device)
+            logger.debug(f"Segment length: {segment_tokens.shape[0]}")
             token_segments[f"Segment_{segment_index}"] = segment_tokens
             start += max_tokens - overlap_tokens
             segment_index += 1
@@ -130,13 +133,14 @@ class ModelTester:
             dict: Mapping of token strings to probability values.
         """
         try:
+            logger.debug(f"Input shape: {tokens.shape}")
+
             inputs = {"input_ids": tokens.unsqueeze(0).to(self.device)}
-            print('start inference')
+           
             with torch.no_grad():
                 outputs = self.model(**inputs)
             logits = outputs.logits[:, -1, :].squeeze()
-            print('end inference')
-
+      
             self.masked_logits.fill_(-float("inf"))
             self.masked_logits[self.valid_mask] = logits.to(self.masked_logits.dtype)[self.valid_mask]
 
@@ -181,7 +185,7 @@ class ModelTester:
         generated_tokens = outputs[0, inputs["input_ids"].shape[1]:]
         return self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
-    def get_score(self, token_prob_dict: dict,) -> float:
+    def get_score(self, token_prob_dict: dict,) -> list[float]:
         """
         Computes sentiment score from token probability dictionary.
 
@@ -201,7 +205,7 @@ class ModelTester:
 
         return scores
 
-    def compute_sample_scores(self, text: Optional[str] = None) -> list[float]:
+    def compute_sample_scores(self, text: Optional[str] = None) -> tuple[list[list[float]], float]:
         """
         Computes scores for each tokenized segment of a report.
 
@@ -217,17 +221,28 @@ class ModelTester:
         clean_text = self.clean_report(text)
         tokenized_segments = self.split_and_tokenize_report(clean_text)
 
-        self.sample_scores = []
+        self.sample_scores: list[list[float]] = []
 
-        logger.debug(f"There are {len(tokenized_segments)} segments of {len(tokenized_segments['Segment_1'])} len")
-        for segment_name, tokens in tokenized_segments.items():
+        logger.info(f"There are {len(tokenized_segments)} segments of {len(tokenized_segments['Segment_1'])} len")
+        
+        inference_durations: list[float] = []
+
+        for segment_name, tokens in tqdm(
+            tokenized_segments.items(), 
+            desc="Processing Segments", 
+            unit="segment"
+            ):
             logger.debug(f"Processing {segment_name}...")
 
+            start = time.perf_counter()
             tokens = tokens.to(self.device)
             token_prob_dict = self.fast_inference(tokens)
+            end = time.perf_counter()
 
-            logger.debug(f"token_prob_dict is ready")
-            sample_score = self.get_score(token_prob_dict,)
+            inference_time = end - start
+            inference_durations.append(inference_time)
+
+            sample_score: list[float] = self.get_score(token_prob_dict,)
             logger.debug(sample_score)
 
             self.sample_scores.append(sample_score)
@@ -237,8 +252,11 @@ class ModelTester:
                 torch.cuda.empty_cache()
                 torch.cuda.ipc_collect()
             gc.collect()
+        
+        inference_durations.pop()
+        self.avg_inefence_duration: float = sum(inference_durations) / len(inference_durations)
 
-        return self.sample_scores
+        return self.sample_scores, self.avg_inefence_duration
 
     def see_pmf(self, text: str | None, top_k_tokens: int = 20):
         """
