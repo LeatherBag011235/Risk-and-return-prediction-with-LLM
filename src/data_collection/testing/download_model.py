@@ -2,7 +2,7 @@ from huggingface_hub import login
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 
-login(token="REMOVED")
+login(token="")
 
 model_name = "mistralai/Mixtral-8x7B-v0.1"
 
