@@ -223,14 +223,15 @@ class ModelDriver:
 
         self.sample_scores: list[list[float]] = []
 
-        logger.info(f"There are {len(tokenized_segments)} segments of {len(tokenized_segments['Segment_1'])} len")
+        logger.debug(f"There are {len(tokenized_segments)} segments of {len(tokenized_segments['Segment_1'])} len")
         
         inference_durations: list[float] = []
 
         for segment_name, tokens in tqdm(
             tokenized_segments.items(), 
             desc="Processing Segments", 
-            unit="segment"
+            unit="segment",
+            position=0,
             ):
             logger.debug(f"Processing {segment_name}...")
 
