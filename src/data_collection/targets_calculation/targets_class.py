@@ -4,28 +4,100 @@ import numpy as np
 import time
 import logging
 
-class CompanyReportAnalyzer:
+class YFinParser:
     def __init__(self, ticker, report_dates):
         self.ticker = ticker
         self.report_dates = sorted(report_dates)
         self.company = yf.Ticker(ticker)
-        self.hist = self.company.history(period="max")
-        self.snp500 = yf.Ticker("^GSPC").history(period="max", auto_adjust=True)
+        self.hist_daily = self.company.history(period="max", auto_adjust=True, interval='1d')
+        self.snp500 = yf.Ticker("^GSPC").history(period="max", auto_adjust=True, interval='1d')
+        self.hist_hourly = pd.DataFrame()
         self.returns = {}
         self.eps_surprises = {}
         self.firm_sizes = {}
 
     def _get_nearest_trading_day(self, date):
-        date = pd.Timestamp(date, tz='America/New_York')
-        while date not in self.hist.index:
+        date = pd.to_datetime(date)
+
+        if date.tzinfo is None:
+            date = date.tz_localize("America/New_York")
+        else:
+            date = date.tz_convert("America/New_York")
+
+        while date not in self.hist_daily.index:
             date += pd.Timedelta(days=1)
+
         return date
+
+    
+    def _find_end_price(self, start_index):
+        prices, dates = [], []
+        for x in range(2, 8):
+            idx = start_index + x
+            if idx < len(self.hist_daily):
+                prices.append(self.hist_daily.iloc[idx]['Close'])
+                dates.append(self.hist_daily.index[idx])
+            else:
+                prices.append(None)
+                dates.append(None)
+        return prices, dates
+    
+    def _find_benchmark_prices(self, start_date, end_dates):
+        start_idx = self.snp500.index.get_loc(start_date)
+        snp_start_price = self.snp500.iloc[start_idx]['Close']
+        snp_end_price_list = []
+
+        for end_date in end_dates:
+            end_idx = self.snp500.index.get_loc(end_date)
+            end_price = self.snp500.iloc[end_idx]['Close']
+            snp_end_price_list.append(end_price)
+            
+        return snp_start_price, snp_end_price_list
+    
+    def _find_quarter_end(self, date_str, start_date):
+        try:
+            idx = self.report_dates.index(date_str)
+            next_date = self.report_dates[idx + 1]
+            next_date = self._get_nearest_trading_day(next_date)
+            end_index = self.hist_daily.index.get_loc(next_date)
+            return self.hist_daily.iloc[end_index]['Close'], next_date, end_index - self.hist_daily.index.get_loc(start_date)
+        except IndexError:
+            return None, None, None
+        
+    def _calc_log_returns(self, start_price, end_prices):
+        return [np.log(p / start_price) if p else None for p in end_prices]
+
+    def _calc_volatility(self, start_date, end_dates):
+
+        df = ...
+
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index()
+        df['log_return'] = np.log(df['Close'] / df['Close'].shift(1))
+        df.dropna()
+        
+        #start_date = pd.to_datetime(start_date).tz_localize("UTC")
+        vols = []
+        
+        for end_date in end_dates:
+            end_date = self._get_nearest_trading_day(end_date)
+
+            window = self.hist_hourly.loc[start_date:end_date]
+            if window.dropna().shape[0] < 2:
+                print(f"Not enough data from: {start_date}, to {end_date}")
+                vols.append(None)
+                continue
+
+            realized_vol = window['log_return'].std() * np.sqrt(252 * 6.5)
+            vols.append(realized_vol)
+
+        return vols
 
     def compute_price_metrics(self):
         for date_str in self.report_dates:
             start_date = self._get_nearest_trading_day(date_str)
-            start_index = self.hist.index.get_loc(start_date)
-            start_price = self.hist.iloc[start_index]['Open']
+            start_index = self.hist_daily.index.get_loc(start_date)
+            start_price = self.hist_daily.iloc[start_index]['Close']
 
             # Collect end prices for days 2-7
             end_price_list, end_date_list = self._find_end_price(start_index)
@@ -35,10 +107,14 @@ class CompanyReportAnalyzer:
             end_price_list.append(q_end_price)
             end_date_list.append(q_end_date)
 
+            snp_start_price, snp_end_price_list = self._find_benchmark_prices(start_date, end_date_list)
+
             reg_returns = self._calc_log_returns(start_price, end_price_list)
-            snp_returns = self._calc_benchmark_returns(start_date, end_date_list)
+            snp_returns = self._calc_log_returns(snp_start_price, snp_end_price_list)
+
             excess_returns = [a - b if a is not None and b is not None else None
                               for a, b in zip(reg_returns, snp_returns)]
+            
             vol = self._calc_volatility(start_date, end_date_list)
 
             self.returns[date_str] = {
@@ -47,58 +123,6 @@ class CompanyReportAnalyzer:
                 "vol": vol,
                 "q_len": q_len
             }
-
-    def _find_end_price(self, start_index):
-        prices, dates = [], []
-        for x in range(2, 8):
-            idx = start_index + x
-            if idx < len(self.hist):
-                prices.append(self.hist.iloc[idx]['Open'])
-                dates.append(self.hist.index[idx])
-            else:
-                prices.append(None)
-                dates.append(None)
-        return prices, dates
-
-    def _find_quarter_end(self, date_str, start_date):
-        try:
-            idx = self.report_dates.index(date_str)
-            next_date = self.report_dates[idx + 1]
-            next_date = self._get_nearest_trading_day(next_date)
-            end_index = self.hist.index.get_loc(next_date)
-            return self.hist.iloc[end_index]['Open'], next_date, end_index - self.hist.index.get_loc(start_date)
-        except IndexError:
-            return None, None, None
-
-    def _calc_log_returns(self, start_price, end_prices):
-        return [np.log(p / start_price) if p else None for p in end_prices]
-
-    def _calc_benchmark_returns(self, start_date, end_dates):
-        start_idx = self.snp500.index.get_loc(start_date)
-        start_price = self.snp500.iloc[start_idx]['Open']
-        returns = []
-        for end_date in end_dates:
-            if end_date is None:
-                returns.append(None)
-                continue
-            end_idx = self.snp500.index.get_loc(end_date)
-            end_price = self.snp500.iloc[end_idx]['Open']
-            returns.append(np.log(end_price / start_price))
-        return returns
-
-    def _calc_volatility(self, start_date, end_dates):
-        vols = []
-        for end_date in end_dates:
-            if end_date is None:
-                vols.append(None)
-                continue
-            window = self.hist.loc[start_date:end_date]['Open']
-            if len(window) > 1:
-                log_returns = np.log(window / window.shift(1)).dropna()
-                vols.append(log_returns.std())
-            else:
-                vols.append(None)
-        return vols
 
     def compute_eps_surprise(self):
         try:
@@ -115,7 +139,7 @@ class CompanyReportAnalyzer:
             shares_df = self.company.get_shares_full(start="2018-02-01", end=None)
             for rep_date in self.report_dates:
                 ts = self._get_nearest_trading_day(rep_date)
-                price = self.hist.loc[ts]['Open']
+                price = self.hist_daily.loc[ts]['Open']
                 closest = min(shares_df.index, key=lambda x: abs(x - ts))
                 shares = shares_df.loc[closest]
                 if isinstance(shares, np.int64):
