@@ -6,6 +6,7 @@ from datetime import date
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
+from alpaca.common.exceptions import APIError
 
 
 tickers = ["AAPL", "MSFT", "TSLA", "GOOGL"]
@@ -33,11 +34,17 @@ end_date = date.today()
 # Request hourly bars for S&P 500 index ETF (SPY)
 request = StockBarsRequest(
     symbol_or_symbols=["SPY"],
-    timeframe=TimeFrame.Hour,
+    timeframe=TimeFrame.Day,
     start=start_date,
     end=end_date,
 )
-
+try:
+    bars = client.get_stock_bars(request)
+except APIError as e:
+    print("❌ Alpaca API Error")
+    print(f"Error type: {type(e)}")
+    print(f"Error message: {e}")
+    print(f"Full content: {str(e)}")  # may show JSON or HTML
 # Fetch the data
 bars = client.get_stock_bars(request)
 df = bars.df
@@ -82,14 +89,15 @@ for ticker in tickers:
                 "two_day_e_r", "three_day_e_r", "four_day_e_r", "five_day_e_r", "six_day_e_r", "seven_day_e_r", "full_q_e_r",
                 "two_day_r_vol", "three_day_r_vol", "four_day_r_vol", "five_day_r_vol", "six_day_r_vol", "seven_day_r_vol", "full_q_r_vol"
             ]
+            if row is not None:
+                missing = [key for key in expected_keys if key not in row]
+                print("❌ Missing keys:", missing)
 
-            missing = [key for key in expected_keys if key not in row]
-            print("❌ Missing keys:", missing)
-            has_none = any(v is None for v in row.values())
-            print(has_none)
+                has_none = any(v is None for v in row.values())
+                print(has_none)
 
-            assert len(row.keys()) == 21, f"❌ Unexpected number of metrics: {len(row)} \n"
-            print(f"✅ Metrics for {date_str}: OK")
+                assert len(row.keys()) == 21, f"❌ Unexpected number of metrics: {len(row)} \n"
+                print(f"✅ Metrics for {date_str}: OK")
 
         parser.compute_eps_surprise()
         parser.compute_firm_size()

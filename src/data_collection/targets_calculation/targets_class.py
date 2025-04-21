@@ -68,6 +68,7 @@ class TargetsParser:
         logging.debug(f"✅ Earliest S&P 500 date:", self.snp500.index.min())
         logging.debug(f"✅ Index overlap:", self.hist_daily.index[0] in self.snp500.index)
 
+        self.end_dates = {}
         self.returns = {}
         self.eps_surprises = {}
         self.firm_sizes = {}
@@ -85,9 +86,8 @@ class TargetsParser:
         while date not in self.hist_daily.index:
             date += pd.Timedelta(days=1)
             if date > max_date:
-                raise ValueError(f"⚠️ Could not find trading day for {date} (past max available: {max_date})")
-
-
+                print(f"No data for {self.ticker} from {date}")
+                return None 
         return date
 
     
@@ -129,12 +129,15 @@ class TargetsParser:
         next_date = self.report_dates[idx + 1]
         next_date = self._get_nearest_trading_day(next_date)
 
-        assert next_date in self.hist_daily.index, f"Next report date '{next_date}' not found in daily data."
+        if next_date is None:
+            return None, None, None 
+        else:
+            assert next_date in self.hist_daily.index, f"Next report date '{next_date}' not found in daily data."
 
-        end_index = self.hist_daily.index.get_loc(next_date)
-        start_index = self.hist_daily.index.get_loc(start_date)
+            end_index = self.hist_daily.index.get_loc(next_date)
+            start_index = self.hist_daily.index.get_loc(start_date)
 
-        return self.hist_daily.iloc[end_index]['Close'], next_date, end_index - start_index
+            return self.hist_daily.iloc[end_index]['Close'], next_date, end_index - start_index
 
         
     def _calc_log_returns(self, start_price, end_prices):
@@ -171,40 +174,68 @@ class TargetsParser:
                 vols.append(None)
 
         return vols
-
-    def compute_price_metrics(self):
+    
+    def compute_end_dates(self):
         for date_str in self.report_dates:
             start_date = self._get_nearest_trading_day(date_str)
-            start_index = self.hist_daily.index.get_loc(start_date)
+
+            if start_date is not None:
+
+                start_index = self.hist_daily.index.get_loc(start_date)
+
+                end_price_list, end_date_list = self._find_end_price(start_index)
+        
+
+                q_end_price, q_end_date, q_len = self._find_quarter_end(date_str, start_date)
+                end_price_list.append(q_end_price)
+                end_date_list.append(q_end_date)
+
+                self.end_dates[date_str] = {
+                "start_date": start_date,
+                "start_index": start_index,
+                "end_prices": end_price_list,
+                "end_dates": end_date_list,
+                "q_len": q_len
+            }
+            else:
+                self.end_dates[date_str] = None
+
+            
+
+    def compute_price_metrics(self):
+        self.compute_end_dates()
+
+        for date_str, info in self.end_dates.items():
+            if info is None:
+                self.returns[date_str] = None
+                continue
+
+            start_date = info["start_date"]
+            start_index = info["start_index"]
             start_price = self.hist_daily.iloc[start_index]['Close']
-
-            end_price_list, end_date_list = self._find_end_price(start_index)
-
-            q_end_price, q_end_date, q_len = self._find_quarter_end(date_str, start_date)
-            end_price_list.append(q_end_price)
-            end_date_list.append(q_end_date)
-
+    
+            end_price_list = info["end_prices"]
+            end_date_list = info["end_dates"]
+            q_len = info["q_len"]
+    
             snp_start_price, snp_end_price_list = self._find_benchmark_prices(start_date, end_date_list)
-
+    
             reg_returns = self._calc_log_returns(start_price, end_price_list)
             snp_returns = self._calc_log_returns(snp_start_price, snp_end_price_list)
-
+    
             excess_returns = [a - b if a is not None and b is not None else None
                               for a, b in zip(reg_returns, snp_returns)]
             
             timeframe_lengths = [2, 3, 4, 5, 6, 7, q_len]
-             
-            normalized_returns = [
-                x / y if x is not None and y is not None else None
-                for x, y in zip(reg_returns, timeframe_lengths)
-            ]
-            normalized_excess_returns = [
-                x / y if x is not None and y is not None else None
-                for x, y in zip(excess_returns, timeframe_lengths)
-            ]
+            
+            normalized_returns = [x / y if x is not None and y is not None else None
+                                  for x, y in zip(reg_returns, timeframe_lengths)]
+            
+            normalized_excess_returns = [x / y if x is not None and y is not None else None
+                                         for x, y in zip(excess_returns, timeframe_lengths)]
             
             vol = self._calc_volatility(start_date, end_date_list)
-
+    
             self.returns[date_str] = {
                 "reg": normalized_returns,
                 "excess": normalized_excess_returns,
@@ -237,6 +268,11 @@ class TargetsParser:
 
     def assemble_target_row(self, date_str):
         r = self.returns[date_str]
+
+        if r is None:
+            logging.warning(f"⚠️ Skipping {date_str}: return data is None")
+            return None
+    
         row = {
             "two_day_r": r["reg"][0],
             "three_day_r": r["reg"][1],
