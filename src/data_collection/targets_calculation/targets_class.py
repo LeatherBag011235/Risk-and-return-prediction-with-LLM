@@ -2,8 +2,10 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import time
-from datetime import date
 import logging
+import statsmodels.api as sm
+from datetime import date
+from pathlib import Path
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
@@ -28,6 +30,8 @@ class TargetsParser:
 
         # --- Set up ticker hourly data ---
         self.company = yf.Ticker(ticker)
+        info = self.company.info
+        self.sector = info.get("sector", None) 
         client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 
         start_date = pd.to_datetime(min(self.report_dates)).date()
@@ -58,6 +62,7 @@ class TargetsParser:
         daily_vwap.index = daily_vwap.index.tz_convert("America/New_York").normalize()
 
         self.hist_daily = pd.DataFrame({"Close": daily_vwap})
+        self.hist_daily["Return"] = self.hist_daily["Close"].pct_change() * 100
 
         # --- Final alignment check ---
         assert not self.hist_daily.empty, f"❌ Daily VWAP is empty for {ticker}"
@@ -68,10 +73,45 @@ class TargetsParser:
         logging.debug(f"✅ Earliest S&P 500 date:", self.snp500.index.min())
         logging.debug(f"✅ Index overlap:", self.hist_daily.index[0] in self.snp500.index)
 
+        base_path = Path(__file__).parent
+        file_path = base_path / 'F-F_Research_Data_5_Factors_2x3_daily.CSV'
+        ff_factors = pd.read_csv(file_path)
+
+        ff_factors.columns = [col.strip() for col in ff_factors.columns]
+        ff_factors.rename(columns={"Mkt-RF": "Mkt_RF"}, inplace=True)
+
+        ff_factors.index = pd.to_datetime(ff_factors.index, format="%Y%m%d")
+        ff_factors.index = ff_factors.index.tz_localize("America/New_York").normalize()
+
+        self.ff_factors = ff_factors
+        self._estimate_factor_model()
+
         self.end_dates = {}
         self.returns = {}
         self.eps_surprises = {}
         self.firm_sizes = {}
+
+    def _estimate_factor_model(self):
+        combined = self.hist_daily.join(self.ff_factors, how="inner")
+        combined.dropna(inplace=True)
+    
+        y = combined["Return"] - combined["RF"]
+        X = combined[["Mkt_RF", "SMB", "HML", "RMW", "CMA"]]
+        X = sm.add_constant(X)
+    
+        model = sm.OLS(y, X).fit()
+        self.factor_model = model
+    
+        # Get p-value for intercept (const)
+        p_val = model.pvalues.get("const", np.nan)
+    
+        # Store boolean flags for significance levels
+        self.const_significance = {
+            "0.05": bool(p_val < 0.05),
+            "0.01": bool(p_val < 0.01),
+            "0.001": bool(p_val < 0.001)
+        }
+
 
 
     def _get_nearest_trading_day(self, date):
@@ -140,8 +180,8 @@ class TargetsParser:
             return self.hist_daily.iloc[end_index]['Close'], next_date, end_index - start_index
 
         
-    def _calc_log_returns(self, start_price, end_prices):
-        return [np.log(p / start_price) if p else None for p in end_prices]
+    def _calc_pct_returns(self, start_price, end_prices):
+        return [((p - start_price) / start_price) * 100 if p else None for p in end_prices]
 
     def _calc_volatility(self, start_date, end_dates):
         df = self.hist_hf.copy()
@@ -175,6 +215,45 @@ class TargetsParser:
 
         return vols
     
+    def _compute_abnormal_returns(self, start_date, end_date_list):
+        ab_norm_ret = []
+
+        for end in end_date_list:
+            if end is not None:
+                window = pd.date_range(start_date, end, freq='B')  # business days
+                if window.tz is None:
+                    window = window.tz_localize("America/New_York")
+                else:
+                    window = window.tz_convert("America/New_York")
+                window = window.normalize()
+
+                ff_window = self.ff_factors.loc[self.ff_factors.index.isin(window)]
+
+                if ff_window.empty:
+                    ab_norm_ret.append(None)
+                    logging.warning(f'ff_window is empty for {start_date} and {end}')
+                    continue
+
+                X = ff_window[["Mkt_RF", "SMB", "HML", "RMW", "CMA"]]
+                X = sm.add_constant(X, has_constant='add')
+                pred = self.factor_model.predict(X)
+
+                expected_return = pred.sum() + ff_window["RF"].sum()
+                actual_window = self.hist_daily.loc[self.hist_daily.index.isin(window)]
+
+                if actual_window.empty:
+                    ab_norm_ret.append(None)
+                    logging.warning(f"Actuall window is empty for {start_date} and {end}")
+                    continue
+
+                actual_return = actual_window["Return"].sum()
+                ab_ret = actual_return - expected_return
+                ab_norm_ret.append(ab_ret / len(ff_window))  # normalize
+            else:
+                ab_norm_ret.append(None)
+
+        return ab_norm_ret
+    
     def compute_end_dates(self):
         for date_str in self.report_dates:
             start_date = self._get_nearest_trading_day(date_str)
@@ -198,9 +277,7 @@ class TargetsParser:
                 "q_len": q_len
             }
             else:
-                self.end_dates[date_str] = None
-
-            
+                self.end_dates[date_str] = None   
 
     def compute_price_metrics(self):
         self.compute_end_dates()
@@ -220,8 +297,8 @@ class TargetsParser:
     
             snp_start_price, snp_end_price_list = self._find_benchmark_prices(start_date, end_date_list)
     
-            reg_returns = self._calc_log_returns(start_price, end_price_list)
-            snp_returns = self._calc_log_returns(snp_start_price, snp_end_price_list)
+            reg_returns = self._calc_pct_returns(start_price, end_price_list)
+            snp_returns = self._calc_pct_returns(snp_start_price, snp_end_price_list)
     
             excess_returns = [a - b if a is not None and b is not None else None
                               for a, b in zip(reg_returns, snp_returns)]
@@ -235,13 +312,16 @@ class TargetsParser:
                                          for x, y in zip(excess_returns, timeframe_lengths)]
             
             vol = self._calc_volatility(start_date, end_date_list)
+
+            norm_abnormal_returns = self._compute_abnormal_returns(start_date, end_date_list)
     
             self.returns[date_str] = {
-                "reg": normalized_returns,
-                "excess": normalized_excess_returns,
-                "vol": vol,
-                "q_len": q_len
-            }
+            "reg": normalized_returns,
+            "excess": normalized_excess_returns,
+            "vol": vol,
+            "abn": norm_abnormal_returns,
+            "q_len": q_len
+        }
 
     def compute_eps_surprise(self):
         try:
@@ -270,9 +350,9 @@ class TargetsParser:
         r = self.returns[date_str]
 
         if r is None:
-            logging.warning(f"⚠️ Skipping {date_str}: return data is None")
+            logging.info(f"⚠️ Skipping {date_str}: return data is None")
             return None
-    
+
         row = {
             "two_day_r": r["reg"][0],
             "three_day_r": r["reg"][1],
@@ -281,6 +361,7 @@ class TargetsParser:
             "six_day_r": r["reg"][4],
             "seven_day_r": r["reg"][5],
             "full_q_r": r["reg"][6],
+
             "two_day_e_r": r["excess"][0],
             "three_day_e_r": r["excess"][1],
             "four_day_e_r": r["excess"][2],
@@ -288,6 +369,15 @@ class TargetsParser:
             "six_day_e_r": r["excess"][4],
             "seven_day_e_r": r["excess"][5],
             "full_q_e_r": r["excess"][6],
+
+            "two_day_abn_r": r["abn"][0],
+            "three_day_abn_r": r["abn"][1],
+            "four_day_abn_r": r["abn"][2],
+            "five_day_abn_r": r["abn"][3],
+            "six_day_abn_r": r["abn"][4],
+            "seven_day_abn_r": r["abn"][5],
+            "full_q_abn_r": r["abn"][6],
+
             "two_day_r_vol": r["vol"][0],
             "three_day_r_vol": r["vol"][1],
             "four_day_r_vol": r["vol"][2],

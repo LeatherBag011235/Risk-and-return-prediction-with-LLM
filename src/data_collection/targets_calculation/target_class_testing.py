@@ -74,6 +74,8 @@ for ticker in tickers:
     print(f"\n🔍 Testing ticker: {ticker}")
     try:
         parser = TargetsParser(ticker=ticker, report_dates=report_dates, snp_df=snp500_daily)
+        print(f"🏷️ Sector: {parser.sector}")
+        print(f"Sig alpha: {parser.const_significance}")
 
         print("✅ Downloaded daily and hourly data.")
         assert not parser.hist_daily.empty, "❌ hist_daily is empty"
@@ -83,12 +85,17 @@ for ticker in tickers:
         parser.compute_price_metrics()
         for date_str in report_dates:
             row = parser.assemble_target_row(date_str)
+            if row is not None:
+                print(f"📈 Abnormal returns for {date_str}: {[row[k] for k in row if 'abn_r' in k]}")
             
             expected_keys = [
                 "two_day_r", "three_day_r", "four_day_r", "five_day_r", "six_day_r", "seven_day_r", "full_q_r",
                 "two_day_e_r", "three_day_e_r", "four_day_e_r", "five_day_e_r", "six_day_e_r", "seven_day_e_r", "full_q_e_r",
+                "two_day_abn_r", "three_day_abn_r", "four_day_abn_r", "five_day_abn_r", "six_day_abn_r", "seven_day_abn_r", "full_q_abn_r",
                 "two_day_r_vol", "three_day_r_vol", "four_day_r_vol", "five_day_r_vol", "six_day_r_vol", "seven_day_r_vol", "full_q_r_vol"
             ]
+
+
             if row is not None:
                 missing = [key for key in expected_keys if key not in row]
                 print("❌ Missing keys:", missing)
@@ -96,7 +103,7 @@ for ticker in tickers:
                 has_none = any(v is None for v in row.values())
                 print(has_none)
 
-                assert len(row.keys()) == 21, f"❌ Unexpected number of metrics: {len(row)} \n"
+                assert len(row.keys()) == 28, f"❌ Unexpected number of metrics: {len(row)} \n"
                 print(f"✅ Metrics for {date_str}: OK")
 
         parser.compute_eps_surprise()
