@@ -1,7 +1,7 @@
 from src.data_collection.targets_calculation.target_executer_class import TargetExecutor
 from src.data_collection.consts import API_KEY, SECRET_KEY, DB_PARAMS
 
-def main():
+def main(): 
     TargetExecutor(API_KEY, SECRET_KEY, DB_PARAMS).run()
 
 if __name__ == "__main__":

@@ -67,14 +67,17 @@ class TargetExecutor:
 
         daily_vwap = df['vwap'].resample('1D').last().dropna()
         snp500_daily = pd.DataFrame({"Close": daily_vwap})
-        snp500_daily.index = snp500_daily.index.tz_localize("UTC").tz_convert("America/New_York").normalize()
+        if snp500_daily.index.tz is None:
+            snp500_daily.index = snp500_daily.index.tz_localize("UTC")
+        snp500_daily.index = snp500_daily.index.tz_convert("America/New_York").normalize()
+
         return snp500_daily
 
     def worker(self, args):
         cik, ticker, snp500_daily = args
         try:
             report_dates = self.fetch_report_dates(cik)
-            parser = TargetsParser(ticker, report_dates, snp500_daily)
+            parser = TargetsParser(ticker, report_dates, snp500_daily, self.api_key, self.secret_key,)
 
             parser.compute_price_metrics()
             parser.compute_eps_surprise()

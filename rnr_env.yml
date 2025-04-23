@@ -6,8 +6,9 @@ dependencies:
   - python=3.12
   - numpy=1.26.*
   - pandas=2.2.*
-  - polars=0.20.*
+  - statsmodels
   - pyarrow
+  - polars=0.20.*
   - psycopg2
   - tqdm
   - jupyter
@@ -19,3 +20,6 @@ dependencies:
   - pip
   - pip:
       - jupyterlab-widgets
+      - alpaca-py
+      - alpaca-trade-api
+      - yfinance
