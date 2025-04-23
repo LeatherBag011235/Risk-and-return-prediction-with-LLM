@@ -1,4 +1,4 @@
-from src.data_collection.targets_calculation.targets_class import TargetsParser
+from src.data_collection.targets_calculation.targets_parser_class import TargetsParser
 from src.data_collection.consts import API_KEY, SECRET_KEY
 import traceback
 import pandas as pd
@@ -46,7 +46,7 @@ except APIError as e:
     print(f"Error message: {e}")
     print(f"Full content: {str(e)}")  # may show JSON or HTML
 # Fetch the data
-bars = client.get_stock_bars(request)
+
 df = bars.df
 
 # Filter and format
@@ -73,7 +73,7 @@ else:
 for ticker in tickers:
     print(f"\n🔍 Testing ticker: {ticker}")
     try:
-        parser = TargetsParser(ticker=ticker, report_dates=report_dates, snp_df=snp500_daily)
+        parser = TargetsParser(ticker=ticker, report_dates=report_dates, snp_df=snp500_daily, API_KEY=API_KEY, SECRET_KEY=SECRET_KEY)
         print(f"🏷️ Sector: {parser.sector}")
         print(f"Sig alpha: {parser.const_significance}")
 

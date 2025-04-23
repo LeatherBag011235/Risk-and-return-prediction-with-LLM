@@ -10,10 +10,8 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
-from src.data_collection.consts import API_KEY, SECRET_KEY
-
 class TargetsParser:
-    def __init__(self, ticker, report_dates, snp_df):
+    def __init__(self, ticker, report_dates, snp_df, API_KEY, SECRET_KEY):
         self.ticker = ticker
         self.report_dates = sorted(report_dates)
 
@@ -101,17 +99,16 @@ class TargetsParser:
     
         model = sm.OLS(y, X).fit()
         self.factor_model = model
-    
-        # Get p-value for intercept (const)
+        
         p_val = model.pvalues.get("const", np.nan)
-    
-        # Store boolean flags for significance levels
+        const_value = model.params.get("const", np.nan)
+
         self.const_significance = {
+            "value": const_value,
             "0.05": bool(p_val < 0.05),
             "0.01": bool(p_val < 0.01),
             "0.001": bool(p_val < 0.001)
         }
-
 
 
     def _get_nearest_trading_day(self, date):
