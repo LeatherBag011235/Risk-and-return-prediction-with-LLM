@@ -143,9 +143,10 @@ class TargetExecutor:
     def run(self):
         snp500_daily = self.get_snp500_daily()
         all_companies = self.fetch_companies()
-    
+
         with mp.Pool(self.pool_size) as pool:
             tasks = [(cik, ticker, snp500_daily) for cik, ticker in all_companies]
-            results = list(tqdm(pool.imap_unordered(self.worker, tasks), total=len(tasks), desc="Processing companies"))
-    
-        self.insert_results(results)
+            for result in tqdm(pool.imap_unordered(self.worker, tasks), total=len(tasks), desc="Processing companies"):
+                if result:
+                    self.insert_results([result])
+                
