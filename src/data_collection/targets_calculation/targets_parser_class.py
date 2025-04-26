@@ -10,38 +10,58 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 
+
 class TargetsParser:
-    def __init__(self, ticker, report_dates, snp_df, API_KEY, SECRET_KEY):
+    """
+    TargetsParser computes stock return metrics, firm size, and EPS surprises 
+    around report dates for a given company. It uses Yahoo Finance for company info 
+    and Alpaca for historical trading data.
+
+    Computes:
+    - Short-term and quarterly returns
+    - Abnormal returns using Fama-French 5-Factor model
+    - Realized volatility
+    - EPS surprise percentages
+    - Firm market capitalization
+    """
+
+    def __init__(
+        self,
+        ticker: str,
+        report_dates: list[str],
+        snp_df: pd.DataFrame,
+        api_key: str,
+        secret_key: str
+    ):
+        """
+        Initialize TargetsParser.
+
+        Args:
+            ticker: Company ticker symbol.
+            report_dates: List of quarterly report dates.
+            snp_df: S&P 500 VWAP daily dataframe.
+            api_key: Alpaca API key.
+            secret_key: Alpaca secret key.
+        """
         self.ticker = ticker
         self.report_dates = sorted(report_dates)
-
-        # --- Set up S&P 500 daily dataframe ---
         self.snp500 = snp_df.copy()
 
-        assert not self.snp500.empty, f"❌ S&P 500 daily data is empty"
+        assert not self.snp500.empty, "❌ S&P 500 daily data is empty"
         assert isinstance(self.snp500.index, pd.DatetimeIndex), "❌ S&P 500 index is not a DatetimeIndex"
 
         if self.snp500.index.tz is None:
             self.snp500.index = self.snp500.index.tz_localize("UTC")
-
         self.snp500.index = self.snp500.index.tz_convert("America/New_York").normalize()
 
-        # --- Set up ticker hourly data ---
         self.company = yf.Ticker(ticker)
-        info = self.company.info
-        self.sector = info.get("sector", None) 
-        client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
+        self.sector = self.company.info.get("sector", None)
 
+        client = StockHistoricalDataClient(api_key, secret_key)
         start_date = pd.to_datetime(min(self.report_dates)).date()
         end_date = date.today()
 
-        request = StockBarsRequest(
-            symbol_or_symbols=[ticker],
-            timeframe=TimeFrame.Hour,
-            start=start_date,
-            end=end_date,
-        )
-
+        request = StockBarsRequest(symbol_or_symbols=[ticker], timeframe=TimeFrame.Hour, start=start_date, end=end_date)
         bars = client.get_stock_bars(request)
         df = bars.df
 
@@ -53,28 +73,19 @@ class TargetsParser:
 
         self.hist_hf = df.copy()
 
-        # --- Build daily VWAP from hourly bars ---
         daily_vwap = df['vwap'].resample('1D').last().dropna()
         if daily_vwap.index.tz is None:
             daily_vwap.index = daily_vwap.index.tz_localize("UTC")
-        daily_vwap.index = daily_vwap.index.tz_convert("America/New_York").normalize()
-
         self.hist_daily = pd.DataFrame({"Close": daily_vwap})
+        self.hist_daily.index = self.hist_daily.index.tz_convert("America/New_York").normalize()
         self.hist_daily["Return"] = self.hist_daily["Close"].pct_change() * 100
 
-        # --- Final alignment check ---
         assert not self.hist_daily.empty, f"❌ Daily VWAP is empty for {ticker}"
-        assert self.hist_daily.index.intersection(self.snp500.index).size > 0, \
-            f"❌ No overlapping dates between {ticker} and S&P 500"
-
-        logging.debug(f"✅ Earliest stock date:", self.hist_daily.index.min())
-        logging.debug(f"✅ Earliest S&P 500 date:", self.snp500.index.min())
-        logging.debug(f"✅ Index overlap:", self.hist_daily.index[0] in self.snp500.index)
+        assert self.hist_daily.index.intersection(self.snp500.index).size > 0, "❌ No overlapping dates with S&P 500"
 
         base_path = Path(__file__).parent
-        file_path = base_path / 'F-F_Research_Data_5_Factors_2x3_daily.CSV'
-        ff_factors = pd.read_csv(file_path)
-
+        ff_file = base_path / 'F-F_Research_Data_5_Factors_2x3_daily.CSV'
+        ff_factors = pd.read_csv(ff_file)
         ff_factors.columns = [col.strip() for col in ff_factors.columns]
         ff_factors.rename(columns={"Mkt-RF": "Mkt_RF"}, inplace=True)
 
@@ -84,22 +95,23 @@ class TargetsParser:
         self.ff_factors = ff_factors
         self._estimate_factor_model()
 
-        self.end_dates = {}
-        self.returns = {}
-        self.eps_surprises = {}
-        self.firm_sizes = {}
+        self.end_dates: dict[str, dict] = {}
+        self.returns: dict[str, dict] = {}
+        self.eps_surprises: dict[str, float] = {}
+        self.firm_sizes: dict[str, float] = {}
 
-    def _estimate_factor_model(self):
-        combined = self.hist_daily.join(self.ff_factors, how="inner")
-        combined.dropna(inplace=True)
-    
+    def _estimate_factor_model(self) -> None:
+        """
+        Estimate Fama-French 5-factor model with intercept.
+        """
+        combined = self.hist_daily.join(self.ff_factors, how="inner").dropna()
         y = combined["Return"] - combined["RF"]
         X = combined[["Mkt_RF", "SMB", "HML", "RMW", "CMA"]]
         X = sm.add_constant(X)
-    
+
         model = sm.OLS(y, X).fit()
         self.factor_model = model
-        
+
         p_val = model.pvalues.get("const", np.nan)
         const_value = model.params.get("const", np.nan)
 
@@ -110,25 +122,41 @@ class TargetsParser:
             "0.001": bool(p_val < 0.001)
         }
 
+    def _get_nearest_trading_day(self, date_val: str | pd.Timestamp) -> pd.Timestamp | None:
+        """
+        Find the next available trading day.
 
-    def _get_nearest_trading_day(self, date):
-        date = pd.to_datetime(date)
+        Args:
+            date_val: Target date.
+
+        Returns:
+            Nearest trading day or None.
+        """
+        date_val = pd.to_datetime(date_val)
         max_date = self.hist_daily.index.max()
 
-        if date.tzinfo is None:
-            date = date.tz_localize("America/New_York")
+        if date_val.tzinfo is None:
+            date_val = date_val.tz_localize("America/New_York")
         else:
-            date = date.tz_convert("America/New_York")
+            date_val = date_val.tz_convert("America/New_York")
 
-        while date not in self.hist_daily.index:
-            date += pd.Timedelta(days=1)
-            if date > max_date:
-                print(f"No data for {self.ticker} from {date}")
-                return None 
-        return date
+        while date_val not in self.hist_daily.index:
+            date_val += pd.Timedelta(days=1)
+            if date_val > max_date:
+                print(f"No data for {self.ticker} from {date_val}")
+                return None
+        return date_val
 
-    
-    def _find_end_price(self, start_index):
+    def _find_end_price(self, start_index: int) -> tuple[list[float | None], list[pd.Timestamp | None]]:
+        """
+        Find stock prices 2-7 days after a starting point.
+
+        Args:
+            start_index: Start index in daily data.
+
+        Returns:
+            Tuple of list of prices and list of dates.
+        """
         prices, dates = [], []
         for x in range(2, 8):
             idx = start_index + x
@@ -139,8 +167,18 @@ class TargetsParser:
                 prices.append(None)
                 dates.append(None)
         return prices, dates
-    
-    def _find_benchmark_prices(self, start_date, end_dates):
+
+    def _find_benchmark_prices(self, start_date: pd.Timestamp, end_dates: list[pd.Timestamp | None]) -> tuple[float, list[float | None]]:
+        """
+        Find S&P 500 starting and ending prices.
+
+        Args:
+            start_date: Start date.
+            end_dates: List of end dates.
+
+        Returns:
+            Starting price and list of end prices.
+        """
         start_idx = self.snp500.index.get_loc(start_date)
         snp_start_price = self.snp500.iloc[start_idx]['Close']
         snp_end_price_list = []
@@ -148,18 +186,25 @@ class TargetsParser:
         for end_date in end_dates:
             if end_date is not None:
                 end_idx = self.snp500.index.get_loc(end_date)
-                end_price = self.snp500.iloc[end_idx]['Close']
-                snp_end_price_list.append(end_price)
+                snp_end_price_list.append(self.snp500.iloc[end_idx]['Close'])
             else:
                 snp_end_price_list.append(None)
-                
-            
+
         return snp_start_price, snp_end_price_list
-    
-    def _find_quarter_end(self, date_str, start_date):
+
+    def _find_quarter_end(self, date_str: str, start_date: pd.Timestamp) -> tuple[float | None, pd.Timestamp | None, int | None]:
+        """
+        Find end of the financial quarter.
+
+        Args:
+            date_str: Report date.
+            start_date: Start trading day.
+
+        Returns:
+            Tuple of (end price, end date, number of trading days).
+        """
         idx = self.report_dates.index(date_str)
 
-        # Last report date — no next quarter
         if idx == len(self.report_dates) - 1:
             return None, None, None
 
@@ -167,68 +212,51 @@ class TargetsParser:
         next_date = self._get_nearest_trading_day(next_date)
 
         if next_date is None:
-            return None, None, None 
-        else:
-            assert next_date in self.hist_daily.index, f"Next report date '{next_date}' not found in daily data."
+            return None, None, None
 
-            end_index = self.hist_daily.index.get_loc(next_date)
-            start_index = self.hist_daily.index.get_loc(start_date)
+        end_index = self.hist_daily.index.get_loc(next_date)
+        start_index = self.hist_daily.index.get_loc(start_date)
 
-            return self.hist_daily.iloc[end_index]['Close'], next_date, end_index - start_index
+        return self.hist_daily.iloc[end_index]['Close'], next_date, end_index - start_index
 
-        
-    def _calc_pct_returns(self, start_price, end_prices):
-        return [((p - start_price) / start_price) * 100 if p else None for p in end_prices]
+    def _calc_pct_returns(self, start_price: float, end_prices: list[float | None]) -> list[float | None]:
+        return [((p - start_price) / start_price) * 100 if p is not None else None for p in end_prices]
 
-    def _calc_volatility(self, start_date, end_dates):
+    def _calc_volatility(self, start_date: pd.Timestamp, end_dates: list[pd.Timestamp | None]) -> list[float | None]:
         df = self.hist_hf.copy()
-
         df.index = pd.to_datetime(df.index)
-        df = df.sort_index()
-
-        df = df.asfreq('1h') 
+        df = df.asfreq('1h')
         df['vwap'] = df['vwap'].ffill()
-
         df['log_return'] = np.log(df['vwap'] / df['vwap'].shift(1))
         df = df.dropna(subset=['log_return'])
 
         vols = []
-
         for end_date in end_dates:
             if end_date:
-                end_date = pd.to_datetime(end_date)
-
                 window = df.loc[start_date:end_date]
-
                 if window.shape[0] < 2:
-                    print(f"⚠️ Not enough data from {start_date} to {end_date}")
                     vols.append(None)
                     continue
-
                 realized_vol = window['log_return'].std(ddof=0) * np.sqrt(252 * 6.5)
                 vols.append(realized_vol)
             else:
                 vols.append(None)
-
         return vols
-    
-    def _compute_abnormal_returns(self, start_date, end_date_list):
+
+    def _compute_abnormal_returns(self, start_date: pd.Timestamp, end_date_list: list[pd.Timestamp | None]) -> list[float | None]:
         ab_norm_ret = []
 
         for end in end_date_list:
             if end is not None:
-                window = pd.date_range(start_date, end, freq='B')  # business days
+                window = pd.date_range(start_date, end, freq='B')
                 if window.tz is None:
                     window = window.tz_localize("America/New_York")
-                else:
-                    window = window.tz_convert("America/New_York")
-                window = window.normalize()
+                window = window.tz_convert("America/New_York").normalize()
 
                 ff_window = self.ff_factors.loc[self.ff_factors.index.isin(window)]
 
                 if ff_window.empty:
                     ab_norm_ret.append(None)
-                    logging.warning(f'ff_window is empty for {start_date} and {end}')
                     continue
 
                 X = ff_window[["Mkt_RF", "SMB", "HML", "RMW", "CMA"]]
@@ -240,43 +268,45 @@ class TargetsParser:
 
                 if actual_window.empty:
                     ab_norm_ret.append(None)
-                    logging.warning(f"Actuall window is empty for {start_date} and {end}")
                     continue
 
                 actual_return = actual_window["Return"].sum()
                 ab_ret = actual_return - expected_return
-                ab_norm_ret.append(ab_ret / len(ff_window))  # normalize
+                ab_norm_ret.append(ab_ret / len(ff_window))
             else:
                 ab_norm_ret.append(None)
 
         return ab_norm_ret
-    
-    def compute_end_dates(self):
+
+    def compute_end_dates(self) -> None:
+        """
+        Compute end dates for short-term and quarterly periods for each report date.
+        """
         for date_str in self.report_dates:
             start_date = self._get_nearest_trading_day(date_str)
 
             if start_date is not None:
-
                 start_index = self.hist_daily.index.get_loc(start_date)
 
                 end_price_list, end_date_list = self._find_end_price(start_index)
-        
-
                 q_end_price, q_end_date, q_len = self._find_quarter_end(date_str, start_date)
                 end_price_list.append(q_end_price)
                 end_date_list.append(q_end_date)
 
                 self.end_dates[date_str] = {
-                "start_date": start_date,
-                "start_index": start_index,
-                "end_prices": end_price_list,
-                "end_dates": end_date_list,
-                "q_len": q_len
-            }
+                    "start_date": start_date,
+                    "start_index": start_index,
+                    "end_prices": end_price_list,
+                    "end_dates": end_date_list,
+                    "q_len": q_len
+                }
             else:
-                self.end_dates[date_str] = None   
+                self.end_dates[date_str] = None
 
-    def compute_price_metrics(self):
+    def compute_price_metrics(self) -> None:
+        """
+        Compute normalized returns, excess returns, abnormal returns, and realized volatility.
+        """
         self.compute_end_dates()
 
         for date_str, info in self.end_dates.items():
@@ -287,40 +317,42 @@ class TargetsParser:
             start_date = info["start_date"]
             start_index = info["start_index"]
             start_price = self.hist_daily.iloc[start_index]['Close']
-    
+
             end_price_list = info["end_prices"]
             end_date_list = info["end_dates"]
             q_len = info["q_len"]
-    
+
             snp_start_price, snp_end_price_list = self._find_benchmark_prices(start_date, end_date_list)
-    
+
             reg_returns = self._calc_pct_returns(start_price, end_price_list)
             snp_returns = self._calc_pct_returns(snp_start_price, snp_end_price_list)
-    
+
             excess_returns = [a - b if a is not None and b is not None else None
                               for a, b in zip(reg_returns, snp_returns)]
-            
+
             timeframe_lengths = [2, 3, 4, 5, 6, 7, q_len]
-            
+
             normalized_returns = [x / y if x is not None and y is not None else None
                                   for x, y in zip(reg_returns, timeframe_lengths)]
-            
+
             normalized_excess_returns = [x / y if x is not None and y is not None else None
                                          for x, y in zip(excess_returns, timeframe_lengths)]
-            
+
             vol = self._calc_volatility(start_date, end_date_list)
-
             norm_abnormal_returns = self._compute_abnormal_returns(start_date, end_date_list)
-    
-            self.returns[date_str] = {
-            "reg": normalized_returns,
-            "excess": normalized_excess_returns,
-            "vol": vol,
-            "abn": norm_abnormal_returns,
-            "q_len": q_len
-        }
 
-    def compute_eps_surprise(self):
+            self.returns[date_str] = {
+                "reg": normalized_returns,
+                "excess": normalized_excess_returns,
+                "vol": vol,
+                "abn": norm_abnormal_returns,
+                "q_len": q_len
+            }
+
+    def compute_eps_surprise(self) -> None:
+        """
+        Download and map EPS surprises to report dates.
+        """
         try:
             eps = self.company.get_earnings_dates(limit=10000).reset_index().drop_duplicates()
             for rep_date in self.report_dates:
@@ -330,7 +362,10 @@ class TargetsParser:
         except Exception as e:
             logging.error(f"EPS surprise fetch failed for {self.ticker}: {e}")
 
-    def compute_firm_size(self):
+    def compute_firm_size(self) -> None:
+        """
+        Download and map firm size (market capitalization) to report dates.
+        """
         try:
             shares_df = self.company.get_shares_full(start=self.report_dates[0], end=None)
             for rep_date in self.report_dates:
@@ -338,19 +373,28 @@ class TargetsParser:
                 price = self.hist_daily.loc[ts]['Close']
                 closest = min(shares_df.index, key=lambda x: abs(x - ts))
                 shares = shares_df.loc[closest]
-                if isinstance(shares, np.int64):
+                if isinstance(shares, (int, np.integer)):
                     self.firm_sizes[rep_date] = shares * price
         except Exception as e:
             logging.error(f"Firm size calc failed for {self.ticker}: {e}")
 
-    def assemble_target_row(self, date_str):
-        r = self.returns[date_str]
+    def assemble_target_row(self, date_str: str) -> dict[str, float | None] | None:
+        """
+        Assemble dictionary of computed metrics for a given report date.
+
+        Args:
+            date_str: Report date string.
+
+        Returns:
+            Dictionary of metrics or None if missing data.
+        """
+        r = self.returns.get(date_str)
 
         if r is None:
             logging.info(f"⚠️ Skipping {date_str}: return data is None")
             return None
 
-        row = {
+        return {
             "two_day_r": r["reg"][0],
             "three_day_r": r["reg"][1],
             "four_day_r": r["reg"][2],
@@ -383,9 +427,17 @@ class TargetsParser:
             "seven_day_r_vol": r["vol"][5],
             "full_q_r_vol": r["vol"][6],
         }
-        return row
 
-    def get_eps_and_size(self, date_str):
+    def get_eps_and_size(self, date_str: str) -> dict[str, float | None]:
+        """
+        Get EPS surprise and firm size for a report date.
+
+        Args:
+            date_str: Report date string.
+
+        Returns:
+            Dictionary with 'eps_surprise' and 'f_size'.
+        """
         return {
             "eps_surprise": self.eps_surprises.get(date_str),
             "f_size": self.firm_sizes.get(date_str)
