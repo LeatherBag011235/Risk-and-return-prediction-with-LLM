@@ -1,0 +1,229 @@
+import psycopg2
+import pandas as pd
+from datetime import datetime
+from typing import Any
+
+class DataFetcher:
+    """
+    DataFetcher class for retrieving and preparing financial report data
+    from a PostgreSQL database for regression analysis.
+
+    Responsibilities:
+    - Connect to the database
+    - Fetch regressors from the 'reports' table
+    - Fetch targets from the 'targets' table
+    - Optionally filter by company characteristics from the 'companies' table
+    - Expand list-type regressors into multiple columns
+    - Prepare data structure suitable for fixed effects regression
+    """
+
+    def __init__(self, db_params: dict[str, Any]) -> None:
+        """
+        Initialize DataFetcher with database connection parameters.
+        Also fetch and print available regressors.
+
+        Args:
+            db_params: Dictionary with DB connection parameters (dbname, user, password, host, port)
+        """
+        self.db_params = db_params
+        self.available_regressors = self._fetch_available_regressors()
+        print("Available regressors:")
+        for reg in self.available_regressors:
+            print(f" - {reg}")
+
+    def get_db_conn(self) -> psycopg2.extensions.connection:
+        """
+        Open a new database connection.
+
+        Returns:
+            A psycopg2 database connection object
+        """
+        return psycopg2.connect(**self.db_params)
+    
+    def fetch_data(self, regressors: list[str] | None = None, company_filters: dict[str, Any] | None = None, prepare_fixed_effects: bool = False) -> pd.DataFrame:
+        """
+        Fetch reports and targets from the database, merge, and optionally filter and reformat.
+
+        Args:
+            regressors: List of regressor column names to select (default all available)
+            company_filters: Dictionary specifying filters based on 'companies' table columns
+            prepare_fixed_effects: Whether to reshape the dataframe for fixed effects regression
+
+        Returns:
+            A pandas DataFrame ready for analysis
+        """
+        reports_df = self._fetch_reports(regressors)
+        targets_df = self._fetch_targets()
+        
+        merged_df = reports_df.merge(targets_df, on='id', how='inner')
+        
+        if company_filters:
+            merged_df = self._apply_company_filters(merged_df, company_filters)
+        
+        if prepare_fixed_effects:
+            merged_df = self._prepare_fixed_effects(merged_df)
+        
+        return merged_df
+    
+    def _fetch_available_regressors(self) -> list[str]:
+        """
+        Fetch all column names from the 'reports' table excluding meta-columns.
+
+        Returns:
+            A list of available regressor column names
+        """
+        with self.get_db_conn() as conn:
+            query = """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = 'reports'
+                  AND column_name NOT IN ('id', 'cik', 'filed_date', 'report_type', 'url', 'raw_text', 'extracted_data', 'created_at')
+                ORDER BY column_name;
+            """
+            df = pd.read_sql_query(query, conn)
+            return df['column_name'].tolist()
+    
+    def _fetch_reports(self, regressors: list[str] | None) -> pd.DataFrame:
+        """
+        Fetch selected regressors from the 'reports' table, keeping only non-null rows.
+        Also expand list-type regressors into separate columns if necessary.
+
+        Args:
+            regressors: List of regressor column names to fetch
+
+        Returns:
+            A pandas DataFrame containing selected regressors
+        """
+        with self.get_db_conn() as conn:
+            columns = ['id', 'cik', 'filed_date']
+            if regressors:
+                columns += regressors
+            else:
+                columns += self.available_regressors
+            
+            cols_str = ", ".join(columns)
+            where_clauses = []
+            if regressors:
+                for reg in regressors:
+                    where_clauses.append(f"{reg} IS NOT NULL")
+            where_sql = " AND ".join(where_clauses)
+            if where_sql:
+                query = f"SELECT {cols_str} FROM reports WHERE {where_sql}"
+            else:
+                query = f"SELECT {cols_str} FROM reports"
+            
+            df = pd.read_sql_query(query, conn)
+        
+        df = self._expand_list_columns(df, regressors)
+        return df
+    
+    def _expand_list_columns(self, df: pd.DataFrame, regressors: list[str] | None) -> pd.DataFrame:
+        """
+        Expand list-type regressor columns into multiple scalar columns.
+
+        Args:
+            df: DataFrame containing the reports
+            regressors: List of regressor names to check and expand
+
+        Returns:
+            A DataFrame with expanded columns
+        """
+        if not regressors:
+            regressors = self.available_regressors
+        
+        for reg in regressors:
+            if reg not in df.columns:
+                continue
+            if df[reg].dropna().apply(lambda x: isinstance(x, (list, tuple))).any():
+                non_null_lists = df[reg].dropna()
+                lengths = non_null_lists.apply(len)
+                if lengths.nunique() != 1:
+                    raise ValueError(f"Regressor '{reg}' contains lists of different lengths!")
+                
+                list_len = lengths.iloc[0]
+                print(f"Expanding list regressor '{reg}' into {list_len} columns...")
+                
+                expanded_cols = pd.DataFrame(non_null_lists.tolist(), index=non_null_lists.index)
+                expanded_cols.columns = [f"{reg}_{i+1}" for i in range(list_len)]
+                
+                df = pd.concat([df.drop(columns=[reg]), expanded_cols], axis=1)
+        
+        return df
+    
+    def _fetch_targets(self) -> pd.DataFrame:
+        """
+        Fetch all targets from the 'targets' table.
+
+        Returns:
+            A pandas DataFrame containing targets
+        """
+        with self.get_db_conn() as conn:
+            query = "SELECT * FROM targets"
+            return pd.read_sql_query(query, conn)
+    
+    def _apply_company_filters(self, merged_df: pd.DataFrame, company_filters: dict[str, Any]) -> pd.DataFrame:
+        """
+        Apply filters based on company characteristics.
+
+        Args:
+            merged_df: Merged DataFrame of reports and targets
+            company_filters: Dictionary specifying filtering conditions
+
+        Returns:
+            A filtered pandas DataFrame
+        """
+        with self.get_db_conn() as conn:
+            query = "SELECT cik, ticker, sector, industry, alpha, sig_005, sig_001, sig_0001 FROM companies"
+            companies_df = pd.read_sql_query(query, conn)
+        
+        merged_df = merged_df.merge(companies_df, on='cik', how='left')
+        
+        for col, val in company_filters.items():
+            if isinstance(val, list):
+                merged_df = merged_df[merged_df[col].isin(val)]
+            else:
+                merged_df = merged_df[merged_df[col] == val]
+        
+        return merged_df
+    
+    def _prepare_fixed_effects(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Prepare DataFrame format for fixed effects regression:
+        - Convert filing dates to year.quarter
+        - Set multiindex (company, date)
+        - Drop unnecessary columns
+
+        Args:
+            df: Merged DataFrame of reports, targets, and companies
+
+        Returns:
+            A cleaned and reindexed pandas DataFrame
+        """
+        df['date'] = df['filed_date'].apply(self.convert_to_quarter)
+        df['company'] = df['ticker']
+        df.set_index(['company', 'date'], inplace=True)
+        
+        cols_to_drop = [col for col in ['id', 'cik', 'ticker', 'filed_date', 'sector', 'industry', 'alpha', 'sig_005', 'sig_001', 'sig_0001'] if col in df.columns]
+        df.drop(columns=cols_to_drop, inplace=True)
+        
+        df.sort_index(inplace=True)
+        
+        return df
+
+    @staticmethod
+    def convert_to_quarter(date_str: str | datetime) -> float:
+        """
+        Convert a date string or datetime object to float format year.quarter.
+
+        Args:
+            date_str: A string ('YYYY-MM-DD') or a datetime object
+
+        Returns:
+            A float representing the year and quarter, e.g., 2010.2
+        """
+        if isinstance(date_str, datetime):
+            date = date_str
+        else:
+            date = datetime.strptime(date_str, '%Y-%m-%d')
+        quarter = (date.month - 1) // 3 + 1
+        return float(f'{date.year}.{quarter}')
