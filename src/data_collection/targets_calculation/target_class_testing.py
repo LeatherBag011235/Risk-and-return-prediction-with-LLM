@@ -9,10 +9,10 @@ from alpaca.data.timeframe import TimeFrame
 from alpaca.common.exceptions import APIError
 
 
-tickers = ["AAPL", "MSFT", "TSLA", "GOOGL"]
+tickers = ["SPH", "AAPL", "MSFT", "TSLA", "GOOGL"]
 report_dates = ["2023-01-01", "2023-04-01", "2023-07-01", "2023-10-01", "2024-01-01"]
 
-tickers = ["FLT", "AWK", "AME", "BRO", "LW", "JKHY", "KEYS", "ROL", "ANET", "CPRT", ]
+tickers = ["NSP", "OCC", "IVAC", "FLT", "AWK", "AME", "BRO", "LW", "JKHY", "KEYS", "ROL", "ANET", "CPRT", ]
 report_dates = [
     "2018-01-01", "2018-04-01", "2018-07-01", "2018-10-01",
     "2019-01-01", "2019-04-01", "2019-07-01", "2019-10-01",

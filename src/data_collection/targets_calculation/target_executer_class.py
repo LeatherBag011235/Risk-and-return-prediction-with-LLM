@@ -1,3 +1,4 @@
+from ast import parse
 import multiprocessing as mp
 import psycopg2
 import pandas as pd
@@ -9,6 +10,7 @@ from alpaca.data.timeframe import TimeFrame
 from tqdm import tqdm
 
 from src.data_collection.targets_calculation.targets_parser_class import TargetsParser
+from src.data_collection.targets_calculation.logging_config import logger
 
 class TargetExecutor:
     """
@@ -86,7 +88,7 @@ class TargetExecutor:
             cur.execute("SELECT filed_date FROM reports WHERE cik = %s ORDER BY filed_date;", (cik,))
             return [r[0] for r in cur.fetchall()]
 
-    def get_snp500_daily(self) -> pd.DataFrame:
+    def get_snp500_hourly(self) -> pd.DataFrame:
         """
         Fetch daily SPY VWAP data.
 
@@ -99,23 +101,17 @@ class TargetExecutor:
 
         request = StockBarsRequest(
             symbol_or_symbols=["SPY"],
-            timeframe=TimeFrame.Day,
+            timeframe=TimeFrame.Hour,
             start=start_date,
             end=end_date,
         )
+
         df = client.get_stock_bars(request).df
         df = df[df.index.get_level_values(0) == "SPY"]
         df.index = df.index.droplevel(0)
         df = df.sort_index()
 
-        daily_vwap = df['vwap'].resample('1D').last().dropna()
-        snp500_daily = pd.DataFrame({"Close": daily_vwap})
-
-        if snp500_daily.index.tz is None:
-            snp500_daily.index = snp500_daily.index.tz_localize("UTC")
-        snp500_daily.index = snp500_daily.index.tz_convert("America/New_York").normalize()
-
-        return snp500_daily
+        return df
 
     def worker(self, args: tuple[str, str, pd.DataFrame]) -> tuple[tuple, list[tuple], list[tuple]] | None:
         """
@@ -127,15 +123,23 @@ class TargetExecutor:
         Returns:
             (company_updates, report_updates, target_rows) or None if error.
         """
-        cik, ticker, snp500_daily = args
+        cik, ticker, snp500_hourly = args
         try:
             report_dates = self.fetch_report_dates(cik)
-            parser = TargetsParser(ticker, report_dates, snp500_daily, self.api_key, self.secret_key)
+            #logger.debug(f"report dates: {report_dates}")
+            report_dates = [pd.to_datetime(date).strftime("%Y-%m-%d") for date in report_dates]
+            
+            assert isinstance(snp500_hourly.index, pd.DatetimeIndex), "Not a DatetimeIndex"
+            assert snp500_hourly.index.is_monotonic_increasing, "Index not sorted"
+
+
+            parser = TargetsParser(ticker, report_dates, snp500_hourly, self.api_key, self.secret_key,)
 
             parser.compute_price_metrics()
             parser.compute_eps_surprise()
             parser.compute_firm_size()
-
+            #logger.debug(f" price metrics: {parser.returns} \n eps: {parser.eps_surprises} \n f_size: {parser.firm_sizes}")
+            
             company_updates = (
                 parser.company.info.get("sector"),
                 parser.factor_model.params["const"],
@@ -144,6 +148,7 @@ class TargetExecutor:
                 parser.const_significance["0.001"],
                 cik
             )
+            logger.debug(f"company updates: {company_updates}")
 
             report_updates = []
             target_rows = []
@@ -172,41 +177,51 @@ class TargetExecutor:
         with self.get_db_conn() as conn, conn.cursor() as cur:
             for r in results:
                 if r is None:
+                    logger.warning(f"results in insert_results are None")
                     continue
 
                 company_data, report_data, target_data = r
+                    
 
                 cur.execute("""
                     UPDATE companies SET sector=%s, alpha=%s, sig_005=%s, sig_001=%s, sig_0001=%s WHERE cik=%s
                 """, company_data)
 
                 execute_batch(cur, """
-                    UPDATE reports SET eps_surprise=%s, firm_size=%s WHERE cik=%s AND filed_date=%s
+                    UPDATE reports SET eps_surprise=%s, f_size=%s WHERE cik=%s AND filed_date=%s
                 """, report_data)
 
                 for row in target_data:
                     cik, filed_date, *metrics = row
                     cur.execute("SELECT id FROM reports WHERE cik=%s AND filed_date=%s", (cik, filed_date))
                     report_id = cur.fetchone()
+
                     if not report_id:
                         continue
                     if len(metrics) != len(self.expected_keys):
                         raise ValueError(f"Mismatch in metrics count for {cik} on {filed_date}")
+                    
                     cur.execute(
-                        f"INSERT INTO targets ({self.cols}) VALUES ({self.placeholders})",
+                        f"""
+                        INSERT INTO targets ({self.cols})
+                        VALUES ({self.placeholders})
+                        ON CONFLICT (report_id) DO UPDATE SET
+                        {', '.join([f"{col}=EXCLUDED.{col}" for col in self.expected_keys])}
+                        """,
                         (report_id[0], *metrics)
                     )
+
             conn.commit()
 
     def run(self) -> None:
         """
         Launch the multiprocessing pipeline and process all companies.
         """
-        snp500_daily = self.get_snp500_daily()
+        snp500_hourly = self.get_snp500_hourly()
         all_companies = self.fetch_companies()
 
         with mp.Pool(self.pool_size) as pool:
-            tasks = [(cik, ticker, snp500_daily) for cik, ticker in all_companies]
+            tasks = [(cik, ticker, snp500_hourly) for cik, ticker in all_companies]
             for result in tqdm(pool.imap_unordered(self.worker, tasks), total=len(tasks), desc="Processing companies"):
                 if result:
                     self.insert_results([result])

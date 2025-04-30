@@ -12,93 +12,95 @@ from alpaca.data.timeframe import TimeFrame
 
 
 class TargetsParser:
-    """
-    TargetsParser computes stock return metrics, firm size, and EPS surprises 
-    around report dates for a given company. It uses Yahoo Finance for company info 
-    and Alpaca for historical trading data.
-
-    Computes:
-    - Short-term and quarterly returns
-    - Abnormal returns using Fama-French 5-Factor model
-    - Realized volatility
-    - EPS surprise percentages
-    - Firm market capitalization
-    """
-
-    def __init__(
-        self,
-        ticker: str,
-        report_dates: list[str],
-        snp_df: pd.DataFrame,
-        api_key: str,
-        secret_key: str
-    ):
-        """
-        Initialize TargetsParser.
-
-        Args:
-            ticker: Company ticker symbol.
-            report_dates: List of quarterly report dates.
-            snp_df: S&P 500 VWAP daily dataframe.
-            api_key: Alpaca API key.
-            secret_key: Alpaca secret key.
-        """
+    def __init__(self, ticker, report_dates, snp_hourly_raw, API_KEY, SECRET_KEY):
         self.ticker = ticker
         self.report_dates = sorted(report_dates)
-        self.snp500 = snp_df.copy()
-
-        assert not self.snp500.empty, "❌ S&P 500 daily data is empty"
-        assert isinstance(self.snp500.index, pd.DatetimeIndex), "❌ S&P 500 index is not a DatetimeIndex"
-
-        if self.snp500.index.tz is None:
-            self.snp500.index = self.snp500.index.tz_localize("UTC")
-        self.snp500.index = self.snp500.index.tz_convert("America/New_York").normalize()
+        self.api_key = API_KEY
+        self.secret_key = SECRET_KEY
 
         self.company = yf.Ticker(ticker)
         self.sector = self.company.info.get("sector", None)
 
-        client = StockHistoricalDataClient(api_key, secret_key)
+        # --- Retrieve and store hourly data ---
+        self.hist_hf = self._download_hourly_data()
+        self.snp_hf = snp_hourly_raw.copy()
+
+        # --- Apply identical transformation to both datasets ---
+        self.hist_daily = self._resample_and_format(self.hist_hf)
+        self.snp500 = self._resample_and_format(self.snp_hf)
+
+        # --- Sanity check ---
+        self._ensure_index_alignment()
+
+        self.ff_factors = self._load_fama_french_factors()
+        self._estimate_factor_model()
+
+        self.end_dates = {}
+        self.returns = {}
+        self.eps_surprises = {}
+        self.firm_sizes = {}
+    
+    def _download_hourly_data(self):
+        client = StockHistoricalDataClient(self.api_key, self.secret_key)
         start_date = pd.to_datetime(min(self.report_dates)).date()
         end_date = date.today()
 
-        request = StockBarsRequest(symbol_or_symbols=[ticker], timeframe=TimeFrame.Hour, start=start_date, end=end_date)
-        bars = client.get_stock_bars(request)
-        df = bars.df
+        request = StockBarsRequest(
+            symbol_or_symbols=[self.ticker],
+            timeframe=TimeFrame.Hour,
+            start=start_date,
+            end=end_date,
+        )
 
-        assert not df.empty, f"❌ No hourly data returned for {ticker}"
+        bars = client.get_stock_bars(request).df
+        assert not bars.empty, f"❌ No hourly data returned for {self.ticker}"
 
-        df = df[df.index.get_level_values(0) == ticker]
-        df.index = df.index.droplevel(0)
+        bars = bars[bars.index.get_level_values(0) == self.ticker]
+        bars.index = bars.index.droplevel(0)
+        bars = bars.sort_index()
+        return bars
+
+    def _resample_and_format(self, df):
+        df = df.copy()
         df = df.sort_index()
 
-        self.hist_hf = df.copy()
-
         daily_vwap = df['vwap'].resample('1D').last().dropna()
+
         if daily_vwap.index.tz is None:
             daily_vwap.index = daily_vwap.index.tz_localize("UTC")
-        self.hist_daily = pd.DataFrame({"Close": daily_vwap})
-        self.hist_daily.index = self.hist_daily.index.tz_convert("America/New_York").normalize()
-        self.hist_daily["Return"] = self.hist_daily["Close"].pct_change() * 100
 
-        assert not self.hist_daily.empty, f"❌ Daily VWAP is empty for {ticker}"
-        assert self.hist_daily.index.intersection(self.snp500.index).size > 0, "❌ No overlapping dates with S&P 500"
+        daily_vwap.index = daily_vwap.index.tz_convert("America/New_York").normalize()
 
+        daily_df = pd.DataFrame({"Close": daily_vwap})
+        daily_df["Return"] = daily_df["Close"].pct_change() * 100
+        return daily_df
+    
+    def _ensure_index_alignment(self):
+        hist_index = self.hist_daily.index
+        snp_index = self.snp500.index
+
+        # Find any dates in hist that are not in snp
+        missing_dates = hist_index.difference(snp_index)
+
+        if not missing_dates.empty:
+            logging.error(f"❌ {len(missing_dates)} dates in {self.ticker} data missing from S&P 500 index!")
+            logging.debug(f"Missing dates: {missing_dates.tolist()}")
+            raise ValueError(f"❌ Misaligned indexes between {self.ticker} and S&P 500 — fix needed.")
+
+        logging.debug(f"✅ All dates in {self.ticker} data are present in S&P 500 index.")
+
+    def _load_fama_french_factors(self):
         base_path = Path(__file__).parent
-        ff_file = base_path / 'F-F_Research_Data_5_Factors_2x3_daily.CSV'
-        ff_factors = pd.read_csv(ff_file)
-        ff_factors.columns = [col.strip() for col in ff_factors.columns]
-        ff_factors.rename(columns={"Mkt-RF": "Mkt_RF"}, inplace=True)
+        file_path = base_path / 'F-F_Research_Data_5_Factors_2x3_daily.CSV'
 
-        ff_factors.index = pd.to_datetime(ff_factors.index, format="%Y%m%d")
-        ff_factors.index = ff_factors.index.tz_localize("America/New_York").normalize()
+        df = pd.read_csv(file_path)
+        df.columns = [col.strip() for col in df.columns]
+        df.rename(columns={"Mkt-RF": "Mkt_RF"}, inplace=True)
 
-        self.ff_factors = ff_factors
-        self._estimate_factor_model()
+        df.index = pd.to_datetime(df.index, format="%Y%m%d")
+        df.index = df.index.tz_localize("America/New_York").normalize()
 
-        self.end_dates: dict[str, dict] = {}
-        self.returns: dict[str, dict] = {}
-        self.eps_surprises: dict[str, float] = {}
-        self.firm_sizes: dict[str, float] = {}
+        return df
 
     def _estimate_factor_model(self) -> None:
         """
@@ -167,24 +169,25 @@ class TargetsParser:
                 prices.append(None)
                 dates.append(None)
         return prices, dates
+    
+    def _find_benchmark_prices(self, start_date, end_dates):
+        try:
+            idx = self.snp500.index.get_loc(start_date)
+        except KeyError:
+            print(f"❌ start_date {start_date} not found in S&P 500 index!")
+            raise
 
-    def _find_benchmark_prices(self, start_date: pd.Timestamp, end_dates: list[pd.Timestamp | None]) -> tuple[float, list[float | None]]:
-        """
-        Find S&P 500 starting and ending prices.
-
-        Args:
-            start_date: Start date.
-            end_dates: List of end dates.
-
-        Returns:
-            Starting price and list of end prices.
-        """
         start_idx = self.snp500.index.get_loc(start_date)
         snp_start_price = self.snp500.iloc[start_idx]['Close']
         snp_end_price_list = []
 
         for end_date in end_dates:
             if end_date is not None:
+                try:
+                    end_idx = self.snp500.index.get_loc(end_date)
+                except KeyError:
+                    print(f"❌ end_date {end_date} not found in S&P 500 index!")
+                    raise
                 end_idx = self.snp500.index.get_loc(end_date)
                 snp_end_price_list.append(self.snp500.iloc[end_idx]['Close'])
             else:
