@@ -63,7 +63,7 @@ class TargetExecutor:
         Fetch companies that meet the following criteria:
         - Have at least one report with a non-null full_list_default_verbolizer.
         - Do not already have alpha in companies table AND 2-day excess and abnormal returns in targets table.
-    
+
         Returns:
             List of (cik, ticker) pairs.
         """
@@ -75,13 +75,15 @@ class TargetExecutor:
                 WHERE r.full_list_default_verbolizer IS NOT NULL
                   AND (
                     c.alpha IS NULL
-                    OR EXISTS (
-                        SELECT 1 FROM reports r2
+                    OR NOT EXISTS (
+                        SELECT 1
+                        FROM reports r2
                         JOIN targets t ON r2.id = t.report_id
                         WHERE r2.cik = c.cik
-                          AND (t.two_day_e_r IS NULL OR t.two_day_abn_r IS NULL)
+                          AND t.two_day_e_r IS NOT NULL
+                          AND t.two_day_abn_r IS NOT NULL
                     )
-                );
+                  );
             """)
             return cur.fetchall()
 
@@ -137,8 +139,7 @@ class TargetExecutor:
         cik, ticker, snp500_hourly = args
         try:
             report_dates = self.fetch_report_dates(cik)
-            report_dates = [pd.to_datetime(date).strftime("%Y-%m-%d") for date in report_dates]
-            
+    
             assert isinstance(snp500_hourly.index, pd.DatetimeIndex), "Not a DatetimeIndex"
             assert snp500_hourly.index.is_monotonic_increasing, "Index not sorted"
 
@@ -222,15 +223,31 @@ class TargetExecutor:
 
             conn.commit()
 
-    def run(self) -> None:
+    def run(self, single_ticker: str | None = None) -> None:
         """
-        Launch the multiprocessing pipeline and process all companies.
+        Launch the multiprocessing pipeline to process all companies or a specific ticker.
+
+        Args:
+            single_ticker: If provided, only this ticker will be processed.
         """
         snp500_hourly = self.get_snp500_hourly()
-        all_companies = self.fetch_companies()
 
-        with mp.Pool(self.pool_size) as pool:
-            tasks = [(cik, ticker, snp500_hourly) for cik, ticker in all_companies]
-            for result in tqdm(pool.imap_unordered(self.worker, tasks), total=len(tasks), desc="Processing companies"):
+        if single_ticker is not None:
+            with self.get_db_conn() as conn, conn.cursor() as cur:
+                cur.execute("SELECT cik FROM companies WHERE ticker = %s", (single_ticker,))
+                res = cur.fetchone()
+                if not res:
+                    logger.warning(f"Ticker {single_ticker} not found in database.")
+                    return
+                cik = res[0]
+                logger.info(f"Processing single ticker: {single_ticker} (CIK: {cik})")
+                result = self.worker((cik, single_ticker, snp500_hourly))
                 if result:
                     self.insert_results([result])
+        else:
+            all_companies = self.fetch_companies()
+            with mp.Pool(self.pool_size) as pool:
+                tasks = [(cik, ticker, snp500_hourly) for cik, ticker in all_companies]
+                for result in tqdm(pool.imap_unordered(self.worker, tasks), total=len(tasks), desc="Processing companies"):
+                    if result:
+                        self.insert_results([result])

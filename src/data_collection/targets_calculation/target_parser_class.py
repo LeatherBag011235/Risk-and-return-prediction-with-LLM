@@ -28,6 +28,7 @@ class TargetsParser:
     def __init__(self, ticker: str, report_dates: list[str], snp_hourly_raw: pd.DataFrame, api_key: str, secret_key: str):
         self.ticker = ticker
         self.report_dates = sorted(report_dates)
+        #logger.debug(f"Sorted repport dates: {self.report_dates}")
         self.api_key = api_key
         self.secret_key = secret_key
 
@@ -160,30 +161,42 @@ class TargetsParser:
             "0.001": bool(p_val < 0.001)
         }
 
+    
     def _get_nearest_trading_day(self, date_val: str | pd.Timestamp) -> pd.Timestamp | None:
         """
-        Find the nearest trading day equal to or after the given date.
+        Return the nearest trading day on or after date_val if within data bounds.
 
         Args:
-            date_val: Date string or timestamp.
+            date_val: The reference date to align to a valid trading day.
 
         Returns:
-            Nearest valid trading day, or None if beyond data range.
+            Nearest valid trading day or None if out of bounds.
         """
         date_val = pd.to_datetime(date_val)
         max_date = self.hist_daily.index.max()
+        min_date = self.hist_daily.index.min()
 
         if date_val.tzinfo is None:
             date_val = date_val.tz_localize("America/New_York")
         else:
             date_val = date_val.tz_convert("America/New_York")
 
+        if not self.hist_daily.index.is_monotonic_increasing:
+            raise RuntimeError("❌ hist_daily index is not sorted!")
+
+        if date_val < min_date or date_val > max_date:
+            logger.warning(f"{self.ticker}: date {date_val} is out of bounds ({min_date} to {max_date})")
+            return None
+
         while date_val not in self.hist_daily.index:
             date_val += pd.Timedelta(days=1)
             if date_val > max_date:
-                print(f"No data for {self.ticker} from {date_val}")
+                logger.warning(f"{self.ticker}: couldn't resolve {date_val} in index")
                 return None
+
         return date_val
+
+
 
     def _find_end_price(self, start_index: int) -> tuple[list[float | None], list[pd.Timestamp | None]]:
         """
@@ -266,7 +279,7 @@ class TargetsParser:
         q_len = end_index - start_index
 
         if q_len < 1:
-            logger.warning(f"q_len for start: {start_date} -- end: {next_date} is {q_len}")
+            logger.warning(f"q_len for start: {start_date} for rep_date-{date_str} -- end: {next_date} is {q_len}")
             raise ValueError(f"q_len for {self.ticker} is {q_len}")
 
         return self.hist_daily.iloc[end_index]['Close'], next_date, q_len
@@ -451,11 +464,14 @@ class TargetsParser:
             shares_df = self.company.get_shares_full(start=self.report_dates[0], end=None)
             for rep_date in self.report_dates:
                 ts = self._get_nearest_trading_day(rep_date)
-                price = self.hist_daily.loc[ts]['Close']
-                closest = min(shares_df.index, key=lambda x: abs(x - ts))
-                shares = shares_df.loc[closest]
-                if isinstance(shares, (int, np.integer)):
-                    self.firm_sizes[rep_date] = shares * price
+                if ts is None:
+                    self.firm_sizes[rep_date] = None
+                else:
+                    price = self.hist_daily.loc[ts]['Close']
+                    closest = min(shares_df.index, key=lambda x: abs(x - ts))
+                    shares = shares_df.loc[closest]
+                    if isinstance(shares, (int, np.integer)):
+                        self.firm_sizes[rep_date] = shares * price
         except Exception as e:
             logging.error(f"Firm size calc failed for {self.ticker}: {e}")
 
