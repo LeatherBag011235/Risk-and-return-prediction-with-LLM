@@ -9,7 +9,7 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from tqdm import tqdm
 
-from src.data_collection.targets_calculation.targets_parser_class import TargetsParser
+from src.data_collection.targets_calculation.target_parser_class import TargetsParser
 from src.data_collection.targets_calculation.logging_config import logger
 
 class TargetExecutor:
@@ -60,8 +60,10 @@ class TargetExecutor:
 
     def fetch_companies(self) -> list[tuple[str, str]]:
         """
-        Fetch companies that have at least one report with a non-null full_list_default_verbolizer.
-
+        Fetch companies that meet the following criteria:
+        - Have at least one report with a non-null full_list_default_verbolizer.
+        - Do not already have alpha in companies table AND 2-day excess and abnormal returns in targets table.
+    
         Returns:
             List of (cik, ticker) pairs.
         """
@@ -70,7 +72,16 @@ class TargetExecutor:
                 SELECT DISTINCT c.cik, c.ticker
                 FROM companies c
                 JOIN reports r ON c.cik = r.cik
-                WHERE r.full_list_default_verbolizer IS NOT NULL;
+                WHERE r.full_list_default_verbolizer IS NOT NULL
+                  AND (
+                    c.alpha IS NULL
+                    OR EXISTS (
+                        SELECT 1 FROM reports r2
+                        JOIN targets t ON r2.id = t.report_id
+                        WHERE r2.cik = c.cik
+                          AND (t.two_day_e_r IS NULL OR t.two_day_abn_r IS NULL)
+                    )
+                );
             """)
             return cur.fetchall()
 
@@ -126,7 +137,6 @@ class TargetExecutor:
         cik, ticker, snp500_hourly = args
         try:
             report_dates = self.fetch_report_dates(cik)
-            #logger.debug(f"report dates: {report_dates}")
             report_dates = [pd.to_datetime(date).strftime("%Y-%m-%d") for date in report_dates]
             
             assert isinstance(snp500_hourly.index, pd.DatetimeIndex), "Not a DatetimeIndex"
@@ -138,7 +148,6 @@ class TargetExecutor:
             parser.compute_price_metrics()
             parser.compute_eps_surprise()
             parser.compute_firm_size()
-            #logger.debug(f" price metrics: {parser.returns} \n eps: {parser.eps_surprises} \n f_size: {parser.firm_sizes}")
             
             company_updates = (
                 parser.company.info.get("sector"),

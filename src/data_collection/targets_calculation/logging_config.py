@@ -3,7 +3,7 @@
 import logging
 
 logger = logging.getLogger("rnr")
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 

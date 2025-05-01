@@ -1,5 +1,3 @@
-from src.data_collection.targets_calculation.targets_parser_class import TargetsParser
-from src.data_collection.consts import API_KEY, SECRET_KEY
 import traceback
 import pandas as pd
 from datetime import date
@@ -7,6 +5,9 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.common.exceptions import APIError
+
+from src.data_collection.targets_calculation.target_parser_class import TargetsParser
+from src.data_collection.consts import API_KEY, SECRET_KEY
 
 
 tickers = ["SPH", "AAPL", "MSFT", "TSLA", "GOOGL"]
