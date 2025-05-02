@@ -31,6 +31,8 @@ class DataFetcher:
         print("Available regressors:")
         for reg in self.available_regressors:
             print(f" - {reg}")
+        
+        self.sectors = self._print_available_sectors()
 
     def get_db_conn(self) -> psycopg2.extensions.connection:
         """
@@ -59,13 +61,43 @@ class DataFetcher:
         merged_df = reports_df.merge(targets_df, left_on='id', right_on='report_id', how='inner')
         merged_df.drop(columns='report_id', inplace=True)
         
-        if company_filters:
-            merged_df = self._apply_company_filters(merged_df, company_filters)
-        
+        if company_filters or prepare_fixed_effects:
+            merged_df = self._apply_company_filters(merged_df, company_filters or {})
+
         if prepare_fixed_effects:
             merged_df = self._prepare_fixed_effects(merged_df)
         
         return merged_df
+    
+    def _print_available_sectors(self) -> None:
+        """
+        Query and print all distinct sectors in the companies table, with row counts.
+
+        Example output:
+            Available sectors:
+             - Technology (54)
+             - Healthcare (38)
+             ...
+        """
+        with self.get_db_conn() as conn:
+            query = """
+                SELECT sector, COUNT(*) AS count
+                FROM companies
+                WHERE sector IS NOT NULL
+                GROUP BY sector
+                ORDER BY count DESC
+            """
+            df = pd.read_sql_query(query, conn)
+
+        sectors = {}
+        print("Available sectors:")
+        for _, row in df.iterrows():
+            print(f" - {row['sector']} ({row['count']})")
+            sectors[row['sector']] = row['count'] 
+
+        return sectors
+
+
     
     def _fetch_available_regressors(self) -> list[str]:
         """
@@ -146,7 +178,7 @@ class DataFetcher:
                 print(f"Expanding list regressor '{reg}' into {list_len} columns...")
                 
                 expanded_cols = pd.DataFrame(non_null_lists.tolist(), index=non_null_lists.index)
-                expanded_cols.columns = [f"{reg}_{i+1}" for i in range(list_len)]
+                expanded_cols.columns = [f"segment_{i+1}" for i in range(list_len)]
                 
                 df = pd.concat([df.drop(columns=[reg]), expanded_cols], axis=1)
         

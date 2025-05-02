@@ -28,7 +28,7 @@ class TargetsParser:
     def __init__(self, ticker: str, report_dates: list[str], snp_hourly_raw: pd.DataFrame, api_key: str, secret_key: str):
         self.ticker = ticker
         self.report_dates = sorted(report_dates)
-        #logger.debug(f"Sorted repport dates: {self.report_dates}")
+        logger.debug(f"Sorted repport dates: {self.report_dates}")
         self.api_key = api_key
         self.secret_key = secret_key
 
@@ -162,7 +162,7 @@ class TargetsParser:
         }
 
     
-    def _get_nearest_trading_day(self, date_val: str | pd.Timestamp) -> pd.Timestamp | None:
+    def _get_nearest_trading_day(self, date: str | pd.Timestamp, direction: str ="forward") -> pd.Timestamp | None:
         """
         Return the nearest trading day on or after date_val if within data bounds.
 
@@ -172,30 +172,37 @@ class TargetsParser:
         Returns:
             Nearest valid trading day or None if out of bounds.
         """
-        date_val = pd.to_datetime(date_val)
+        date = pd.to_datetime(date)
         max_date = self.hist_daily.index.max()
         min_date = self.hist_daily.index.min()
 
-        if date_val.tzinfo is None:
-            date_val = date_val.tz_localize("America/New_York")
+        if date.tzinfo is None:
+            date = date.tz_localize("America/New_York")
         else:
-            date_val = date_val.tz_convert("America/New_York")
+            date = date.tz_convert("America/New_York")
+
+        date = date.normalize()
 
         if not self.hist_daily.index.is_monotonic_increasing:
             raise RuntimeError("❌ hist_daily index is not sorted!")
 
-        if date_val < min_date or date_val > max_date:
-            logger.warning(f"{self.ticker}: date {date_val} is out of bounds ({min_date} to {max_date})")
+        if date < min_date or date > max_date:
+            logger.warning(f"{self.ticker}: date {date} is out of bounds ({min_date} to {max_date})")
             return None
 
-        while date_val not in self.hist_daily.index:
-            date_val += pd.Timedelta(days=1)
-            if date_val > max_date:
-                logger.warning(f"{self.ticker}: couldn't resolve {date_val} in index")
-                return None
+        hist_idx = self.hist_daily.index
 
-        return date_val
+        if direction == "forward":
+            idx = hist_idx.get_indexer([date], method="backfill")[0]
+        elif direction == "backward":
+            idx = hist_idx.get_indexer([date], method="pad")[0]
+        else:
+            raise ValueError(f"Invalid direction '{direction}', expected 'forward' or 'backward'.")
 
+        if idx == -1:
+            return None
+
+        return hist_idx[idx]
 
 
     def _find_end_price(self, start_index: int) -> tuple[list[float | None], list[pd.Timestamp | None]]:
@@ -269,13 +276,22 @@ class TargetsParser:
             return None, None, None
 
         next_date = self.report_dates[idx + 1]
-        next_date = self._get_nearest_trading_day(next_date)
+        logger.debug(f"date_str: {date_str}, next date_str: {next_date}, ")
+
+        next_date = self._get_nearest_trading_day(next_date, direction="backward")
 
         if next_date is None:
             return None, None, None
+        
+        if next_date <= start_date:
+            logger.warning(f"❌ Invalid quarter for {self.ticker}: start={start_date}, end={next_date}")
+            return None, None, None
+        
+        logger.debug(f"start_date: {start_date}next_date: {next_date}")
 
         end_index = self.hist_daily.index.get_loc(next_date)
         start_index = self.hist_daily.index.get_loc(start_date)
+
         q_len = end_index - start_index
 
         if q_len < 1:
