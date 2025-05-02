@@ -2,6 +2,7 @@ import psycopg2
 import pandas as pd
 from datetime import datetime
 from typing import Any
+from datetime import datetime, date
 
 class DataFetcher:
     """
@@ -55,7 +56,8 @@ class DataFetcher:
         reports_df = self._fetch_reports(regressors)
         targets_df = self._fetch_targets()
         
-        merged_df = reports_df.merge(targets_df, on='id', how='inner')
+        merged_df = reports_df.merge(targets_df, left_on='id', right_on='report_id', how='inner')
+        merged_df.drop(columns='report_id', inplace=True)
         
         if company_filters:
             merged_df = self._apply_company_filters(merged_df, company_filters)
@@ -211,19 +213,22 @@ class DataFetcher:
         return df
 
     @staticmethod
-    def convert_to_quarter(date_str: str | datetime) -> float:
+    def convert_to_quarter(date_input: str | datetime) -> float:
         """
-        Convert a date string or datetime object to float format year.quarter.
-
+        Convert a date string or datetime/date object to float format year.quarter.
+    
         Args:
-            date_str: A string ('YYYY-MM-DD') or a datetime object
-
+            date_input: A string ('YYYY-MM-DD'), datetime.datetime, or datetime.date
+    
         Returns:
             A float representing the year and quarter, e.g., 2010.2
         """
-        if isinstance(date_str, datetime):
-            date = date_str
+        if isinstance(date_input, str):
+            date_obj = datetime.strptime(date_input, '%Y-%m-%d')
+        elif isinstance(date_input, (datetime, date)):
+            date_obj = date_input
         else:
-            date = datetime.strptime(date_str, '%Y-%m-%d')
-        quarter = (date.month - 1) // 3 + 1
-        return float(f'{date.year}.{quarter}')
+            raise TypeError(f"Unsupported date input type: {type(date_input)}")
+        
+        quarter = (date_obj.month - 1) // 3 + 1
+        return float(f"{date_obj.year}.{quarter}")
