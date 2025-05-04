@@ -242,22 +242,15 @@ class DataFetcher:
         validates max 4 filings per year per company,
         sets index, and drops unused columns.
         """
-        # Step 1: Sort to ensure proper order for ranking
         df = df.sort_values('filed_date')
         df['year'] = pd.to_datetime(df['filed_date']).dt.year
-        
-        # Step 2: Assign per-year rank within each company
+
         df['filing_rank'] = df.groupby(['cik', 'year']).cumcount()
         
-        # Step 3: Keep only rows with rank 1 to 4 (i.e., drop rank 0 if there are 5 filings)
-        # This keeps latest 4 filings per year
         df = df[df['filing_rank'] >= (df.groupby(['cik', 'year'])['filing_rank'].transform('max') - 3)]
         
-        # Step 4: Recompute quarter rank as 1–4 (since we dropped the earliest)
         df['quarter_rank'] = df.groupby(['cik', 'year']).cumcount() + 1
 
-    
-        # Check: no (cik, year) has more than 4 filings
         overfilled = df[df['quarter_rank'] > 4]
         if not overfilled.empty:
             problem_rows = (
@@ -268,7 +261,6 @@ class DataFetcher:
             )
             raise ValueError(f"Detected >4 filings per year for some companies:\n{problem_rows}")
     
-        # Assign float quarter (e.g., 2022.1, 2022.2, ...)
         df['date'] = (df['year'] + df['quarter_rank'] * 0.1).round(1)
         df['company'] = df['ticker']
     
@@ -279,7 +271,7 @@ class DataFetcher:
                 'id', 'cik', 'ticker', 'filed_date',
                 'sector', 'industry', 'alpha',
                 'sig_005', 'sig_001', 'sig_0001',
-                'year', 'quarter_rank'
+                'year', 'quarter_rank', 'filing_rank'
             ] if col in df.columns
         ]
         df.drop(columns=cols_to_drop, inplace=True)
