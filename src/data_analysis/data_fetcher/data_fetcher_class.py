@@ -43,30 +43,47 @@ class DataFetcher:
         """
         return psycopg2.connect(**self.db_params)
     
-    def fetch_data(self, regressors: list[str] | None = None, company_filters: dict[str, Any] | None = None, prepare_fixed_effects: bool = False) -> pd.DataFrame:
+    def fetch_data(
+        self,
+        regressors: list[str] | None = None,
+        company_filters: dict[str, Any] | None = None,
+        report_filters: dict[str, Any] | None = None,
+        prepare_fixed_effects: bool = False
+    ) -> pd.DataFrame:
         """
         Fetch reports and targets from the database, merge, and optionally filter and reformat.
 
         Args:
             regressors: List of regressor column names to select (default all available)
-            company_filters: Dictionary specifying filters based on 'companies' table columns
-            prepare_fixed_effects: Whether to reshape the dataframe for fixed effects regression
+            company_filters: Dict of filters from companies table (e.g., {'sector': 'Tech'})
+            report_filters: Dict of filters from reports table (e.g., {'report_type': '10-Q'})
+            prepare_fixed_effects: Whether to format for fixed effects regression
 
         Returns:
             A pandas DataFrame ready for analysis
         """
         reports_df = self._fetch_reports(regressors)
+
+        # ✅ Apply filters to reports
+        if report_filters:
+            for col, val in report_filters.items():
+                if col not in reports_df.columns:
+                    raise ValueError(f"Filter column '{col}' not found in reports table.")
+                if isinstance(val, list):
+                    reports_df = reports_df[reports_df[col].isin(val)]
+                else:
+                    reports_df = reports_df[reports_df[col] == val]
+
         targets_df = self._fetch_targets()
-        
         merged_df = reports_df.merge(targets_df, left_on='id', right_on='report_id', how='inner')
         merged_df.drop(columns='report_id', inplace=True)
-        
+
         if company_filters or prepare_fixed_effects:
             merged_df = self._apply_company_filters(merged_df, company_filters or {})
 
         if prepare_fixed_effects:
             merged_df = self._prepare_fixed_effects(merged_df)
-        
+
         return merged_df
     
     def _print_available_sectors(self) -> None:
@@ -97,8 +114,6 @@ class DataFetcher:
 
         return sectors
 
-
-    
     def _fetch_available_regressors(self) -> list[str]:
         """
         Fetch all column names from the 'reports' table excluding meta-columns.
@@ -129,7 +144,7 @@ class DataFetcher:
             A pandas DataFrame containing selected regressors
         """
         with self.get_db_conn() as conn:
-            columns = ['id', 'cik', 'filed_date']
+            columns = ['id', 'cik', 'filed_date', 'report_type']
             if regressors:
                 columns += regressors
             else:
