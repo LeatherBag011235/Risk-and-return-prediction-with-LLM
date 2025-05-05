@@ -207,7 +207,7 @@ class DataFetcher:
             A pandas DataFrame containing targets
         """
         with self.get_db_conn() as conn:
-            query = "SELECT * FROM targets"
+            query = "SELECT * FROM targets_yf"
             return pd.read_sql_query(query, conn)
     
     def _apply_company_filters(self, merged_df: pd.DataFrame, company_filters: dict[str, Any]) -> pd.DataFrame:

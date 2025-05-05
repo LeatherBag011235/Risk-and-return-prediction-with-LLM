@@ -2,7 +2,7 @@ import polars as pl
 import psycopg2
 import re
 from pathlib import Path
-from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
 
@@ -27,12 +27,11 @@ class SentimentAnalyzer:
         self.dictionary_path = dictionary_path
         self.score_column = score_column
         self.workers = workers
-        self.pos_words, self.neg_words = self.load_dictionary()
 
         # Ensure the score column exists in the reports table
         self.ensure_score_column_exists()
 
-    def load_dictionary(self) -> tuple[set[str], set[str]]:
+    def load_dictionary(self) -> pl.DataFrame:
         """
         Loads the sentiment dictionary from a Parquet file.
 
@@ -40,10 +39,15 @@ class SentimentAnalyzer:
             tuple[set[str], set[str]]: A set of positive words and a set of negative words.
         """
         df = pl.read_parquet(self.dictionary_path)
-        pos_words = set(df.filter(pl.col("positive") == True)["word"].to_list())
-        neg_words = set(df.filter(pl.col("positive") == False)["word"].to_list())
-        return pos_words, neg_words
-
+        return df.select(["word", "positive"]).with_columns(pl.col("word").str.to_lowercase())
+    
+    @staticmethod
+    def clean_text(text: str) -> str:
+        text = re.sub(r'[^a-zA-Z0-9 ]', '', text)
+        text = re.sub(r'\b\S*?\d\S*\b', '', text)
+        text = re.sub(r'\s+', ' ', text)
+        return text.strip()
+    
     def ensure_score_column_exists(self):
         """
         Checks if the score column exists in the reports table and adds it if missing.
@@ -87,73 +91,53 @@ class SentimentAnalyzer:
         return reports
 
     @staticmethod
-    def count_sentiment_words(text: str, pos_words: set[str], neg_words: set[str]) -> tuple[int, int]:
-        """
-        Counts the number of positive and negative words in a text.
+    def compute_score_worker(report: tuple[int, str], dictionary_path: str, score_column: str) -> dict:
 
-        Args:
-            text (str): The document text.
-            pos_words (set[str]): Set of positive words.
-            neg_words (set[str]): Set of negative words.
+        report_id, text = report
+        cleaned = SentimentAnalyzer.clean_text(text)
 
-        Returns:
-            tuple[int, int]: (Positive word count, Negative word count)
-        """
-        words = re.findall(r'\b\w+\b', text.lower())  # Tokenize words
-        word_counts = Counter(words)
+        words = cleaned.split()
+        if not words:
+            return {"id": report_id, score_column: 0.0}
 
-        n_pos = sum(word_counts[word] for word in pos_words if word in word_counts)
-        n_neg = sum(word_counts[word] for word in neg_words if word in word_counts)
+        df_words = pl.DataFrame({"word": words})
 
-        return n_pos, n_neg
+        dictionary_df = pl.read_parquet(dictionary_path).select(["word", "positive"]).with_columns(
+            pl.col("word").str.to_lowercase()
+        )
 
-    def compute_sentiment_score(self, report_id: int, text: str) -> dict:
-        """
-        Computes the sentiment score for a document using the dictionary.
+        joined = df_words.join(dictionary_df, on="word", how="inner")
+        counts = joined.group_by("positive").len().to_dict(as_series=False)
 
-        Args:
-            report_id (int): Unique report identifier.
-            text (str): The text of the document.
+        n_pos = 0
+        n_neg = 0
+        for flag, count in zip(counts["positive"], counts["len"]):
+            if flag:
+                n_pos = count
+            else:
+                n_neg = count
 
-        Returns:
-            dict: Dictionary with id and computed sentiment score.
-        """
-        n_pos, n_neg = self.count_sentiment_words(text, self.pos_words, self.neg_words)
-
-        if n_pos + n_neg == 0:
-            score = 0.0  
-        else:
-            score = (n_pos - n_neg) / (n_pos + n_neg)
-
-        return {"id": report_id, self.score_column: score}
+        score = 0.0 if (n_pos + n_neg == 0) else (n_pos - n_neg) / (n_pos + n_neg)
+        return {"id": report_id, score_column: score}
 
     def process_reports_parallel(self, reports: list[tuple[int, str]]) -> list[dict]:
-        """
-        Processes multiple reports in parallel to compute sentiment scores.
-
-        Args:
-            reports (list[tuple[int, str]]): List of (id, raw_text).
-
-        Returns:
-            list[dict]: List of sentiment score dictionaries.
-        """
         results = []
-        
         with ProcessPoolExecutor(max_workers=self.workers) as executor, tqdm(
             total=len(reports), desc=f"Processing {self.score_column}", unit="report"
         ) as progress:
-            future_to_report = {
-                executor.submit(self.compute_sentiment_score, report_id, text): report_id
-                for report_id, text in reports
-            }
+            futures = [
+                executor.submit(
+                    SentimentAnalyzer.compute_score_worker, report, str(self.dictionary_path), self.score_column
+                )
+                for report in reports
+            ]
 
-            for future in as_completed(future_to_report):
+            for future in as_completed(futures):
                 try:
                     results.append(future.result())
                 except Exception as e:
-                    print(f"Error processing report {future_to_report[future]}: {e}")
-                
-                progress.update(1)  
+                    print(f"Error processing report: {e}")
+                progress.update(1)
 
         return results
 
