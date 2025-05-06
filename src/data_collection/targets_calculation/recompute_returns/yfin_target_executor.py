@@ -122,19 +122,25 @@ class YFTargetExecutor:
             assert isinstance(snp500_daily.index, pd.DatetimeIndex), "Not a DatetimeIndex"
             assert snp500_daily.index.is_monotonic_increasing, "Index not sorted"
 
-            parser = YFTargetsParser(ticker, report_dates, snp500_daily,)
+            parser = YFTargetsParser(ticker, report_dates, snp500_daily, use_open=True)
 
             parser.compute_price_metrics()
+            parser.compute_eps_surprise()
+            parser.compute_firm_size()
             
+
+            report_updates = []
             target_rows = []
 
             for date in report_dates:
+                eps_size = parser.get_eps_and_size(date)
+                report_updates.append((eps_size["eps_surprise"], eps_size["f_size"], cik, date))
 
                 row = parser.assemble_target_row(date)
                 if row:
                     target_rows.append((cik, date, *row.values()))
 
-            return target_rows
+            return report_updates, target_rows
 
         except Exception as e:
             print(f"❌ Error for {ticker}: {e}")
@@ -153,7 +159,11 @@ class YFTargetExecutor:
                     logger.warning(f"results in insert_results are None")
                     continue
 
-                target_data = r
+                report_data, target_data = r
+
+                execute_batch(cur, """
+                    UPDATE reports SET eps_surprise=%s, f_size=%s WHERE cik=%s AND filed_date=%s
+                """, report_data)
 
                 for row in target_data:
                     cik, filed_date, *metrics = row
@@ -164,10 +174,6 @@ class YFTargetExecutor:
                         continue
                     if len(metrics) != len(self.expected_keys):
                         raise ValueError(f"Mismatch in metrics count for {cik} on {filed_date}")
-                    
-                    for i, val in enumerate(metrics):
-                        if isinstance(val, pd.Series):
-                            print(f"⚠️ Metric {i} is a Series: {val}")
                     
                     cur.execute(
                         f"""

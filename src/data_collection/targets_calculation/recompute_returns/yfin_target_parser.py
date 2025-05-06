@@ -49,6 +49,8 @@ class YFTargetsParser:
 
         self.end_dates: dict[str, dict] = {}
         self.returns: dict[str, dict | None] = {}
+        self.eps_surprises: dict[str, float | None] = {}
+        self.firm_sizes: dict[str, float | None] = {}
 
     def _download_and_format_yf_data(self):
         start = min(self.report_dates)
@@ -164,8 +166,10 @@ class YFTargetsParser:
             idx = hist_idx.get_indexer([date], method="backfill")[0]
         elif direction == "backward":
             idx = hist_idx.get_indexer([date], method="pad")[0]
+        elif direction == "nearest": 
+            idx = hist_idx.get_indexer([date], method="nearest")[0]
         else:
-            raise ValueError(f"Invalid direction '{direction}', expected 'forward' or 'backward'.")
+            raise ValueError(f"Invalid direction '{direction}', expected 'forward', 'backward' or 'nearest'.")
 
         if idx == -1:
             return None
@@ -343,7 +347,7 @@ class YFTargetsParser:
         Populates the `end_dates` dictionary with start/end price info and lengths.
         """
         for date_str in self.report_dates:
-            start_date = self._get_nearest_trading_day(date_str, seek_start=True)
+            start_date = self._get_nearest_trading_day(date_str, seek_start=False)
 
             if start_date is not None:
                 start_index = self.hist_daily.index.get_loc(start_date)
@@ -442,4 +446,91 @@ class YFTargetsParser:
             "six_day_abn_r": r["abn"][4],
             "seven_day_abn_r": r["abn"][5],
             "full_q_abn_r": r["abn"][6],
+        }
+    
+    def compute_eps_surprise(self) -> None:
+        """
+        Download and assign EPS surprises to report dates.
+        Populates the `eps_surprises` dictionary.
+        """
+        try:
+            eps = self.company.get_earnings_dates(limit=10000).reset_index().drop_duplicates()
+            eps['Earnings Date'] = pd.to_datetime(eps['Earnings Date']).dt.normalize()
+            eps = eps.dropna(subset=['Surprise(%)'])
+            eps = eps.sort_values(by="Earnings Date")
+
+            for rep_date in self.report_dates:
+                rep_ts = pd.Timestamp(rep_date, tz='America/New_York').normalize()
+
+                possible = eps[eps['Earnings Date'] <= rep_ts]
+
+                if possible.empty:
+                    self.eps_surprises[rep_date] = None
+                    logger.warning(
+                        f"No EPS data available on or before {rep_date} for {self.ticker}"
+                    )
+                    continue
+
+                closest = possible.iloc[-1]  # most recent prior
+                eps_surprise = closest['Surprise(%)']
+                
+                if isinstance(eps_surprise, (float, np.floating)):
+                    self.eps_surprises[rep_date] = eps_surprise
+                else:
+                    raise ValueError(f"Value of eps_surprise must be float; it is - {eps_surprise}")
+        except Exception as e:
+            logging.error(f"EPS surprise fetch failed for {self.ticker}: {e}")
+
+    def compute_firm_size(self) -> None:
+        """
+        Download and assign market capitalization to report dates.
+        Populates the `firm_sizes` dictionary.
+        """
+        try:
+            shares_df = self.company.get_shares_full(start=self.report_dates[0], end=None)
+            shares_df = shares_df[~shares_df.index.duplicated(keep='last')]
+            available_indices = list(shares_df.index) 
+
+            for rep_date in self.report_dates:
+                ts = self._get_nearest_trading_day(rep_date, direction='nearest')
+
+                if ts is None:
+                    self.firm_sizes[rep_date] = None
+                    logger.warning(
+                            f"None of nearest trade day for firm size computation for {self.ticker}" 
+                            f"starting from -> {rep_date}"
+                            ) 
+
+                elif not available_indices:
+                        logger.warning(
+                            f"None of avalivle indexes in for firm size computation for {self.ticker} " 
+                            f"starting from -> {rep_date}"
+                            ) 
+                        self.firm_sizes[rep_date] = None
+                else:
+                    price = self.hist_daily.loc[ts][self.price_col]
+
+                    closest = min(available_indices, key=lambda x: abs(x - ts))
+
+                    shares = shares_df.loc[closest]
+                    if isinstance(shares, (int, float, np.integer, np.floating)):
+                        self.firm_sizes[rep_date] = shares * price
+                    else:
+                        raise RuntimeError(f'Value of shares must be int or float; it is - {shares}')
+        except Exception as e:
+            logging.error(f"Firm size calc failed for {self.ticker}: {e}")
+
+    def get_eps_and_size(self, date_str: str) -> dict[str, float | None]:
+        """
+        Get EPS surprise and firm size for a report date.
+
+        Args:
+            date_str: Report date string.
+
+        Returns:
+            Dictionary with 'eps_surprise' and 'f_size'.
+        """
+        return {
+            "eps_surprise": self.eps_surprises.get(date_str),
+            "f_size": self.firm_sizes.get(date_str)
         }
