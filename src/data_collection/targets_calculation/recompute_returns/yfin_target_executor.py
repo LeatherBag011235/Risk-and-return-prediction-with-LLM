@@ -122,7 +122,7 @@ class YFTargetExecutor:
             assert isinstance(snp500_daily.index, pd.DatetimeIndex), "Not a DatetimeIndex"
             assert snp500_daily.index.is_monotonic_increasing, "Index not sorted"
 
-            parser = YFTargetsParser(ticker, report_dates, snp500_daily, use_open=True)
+            parser = YFTargetsParser(ticker, report_dates, snp500_daily, use_open=False)
 
             parser.compute_price_metrics()
             parser.compute_eps_surprise()

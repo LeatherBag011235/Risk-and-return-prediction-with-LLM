@@ -347,7 +347,7 @@ class YFTargetsParser:
         Populates the `end_dates` dictionary with start/end price info and lengths.
         """
         for date_str in self.report_dates:
-            start_date = self._get_nearest_trading_day(date_str, seek_start=False)
+            start_date = self._get_nearest_trading_day(date_str, seek_start=True)
 
             if start_date is not None:
                 start_index = self.hist_daily.index.get_loc(start_date)
