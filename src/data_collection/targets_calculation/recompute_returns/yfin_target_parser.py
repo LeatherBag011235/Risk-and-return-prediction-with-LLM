@@ -45,7 +45,7 @@ class YFTargetsParser:
         self._ensure_index_alignment()
 
         self.ff_factors = self._load_fama_french_factors()
-        self._estimate_factor_model()
+        self._estimate_factor_models()
 
         self.end_dates: dict[str, dict] = {}
         self.returns: dict[str, dict | None] = {}
@@ -103,21 +103,20 @@ class YFTargetsParser:
 
         return df
 
-    def _estimate_factor_model(self) -> None:
+    def _estimate_factor_models(self) -> None:
         """
-        Estimate Fama-French 5-factor model with intercept.
+        Estimate Fama-French 5-factor and CAPM models with intercepts.
         Computes model coefficients and significance levels.
         """
         combined = self.hist_daily.join(self.ff_factors, how="inner").dropna()
         y = combined["Return"] - combined["RF"]
-        x = combined[["Mkt_RF", "SMB", "HML", "RMW", "CMA"]]
-        x = sm.add_constant(x)
+        x_ff5 = combined[["Mkt_RF", "SMB", "HML", "RMW", "CMA"]]
+        x_ff5 = sm.add_constant(x_ff5)
+        ff5_model = sm.OLS(y, x_ff5).fit()
+        self.factor_model = ff5_model
 
-        model = sm.OLS(y, x).fit()
-        self.factor_model = model
-
-        p_val = model.pvalues.get("const", np.nan)
-        const_value = model.params.get("const", np.nan)
+        p_val = ff5_model.pvalues.get("const", np.nan)
+        const_value = ff5_model.params.get("const", np.nan)
 
         self.const_significance = {
             "value": const_value,
@@ -125,6 +124,10 @@ class YFTargetsParser:
             "0.01": bool(p_val < 0.01),
             "0.001": bool(p_val < 0.001)
         }
+
+        x_capm = combined[["Mkt_RF"]]
+        x_capm = sm.add_constant(x_capm)
+        self.capm_model = sm.OLS(y, x_capm).fit()
 
     
     def _get_nearest_trading_day(
@@ -296,13 +299,21 @@ class YFTargetsParser:
         """
         return [((p - start_price) / start_price) * 100 if p is not None else None for p in end_prices]
 
-    def _compute_abnormal_returns(self, start_date: pd.Timestamp, end_date_list: list[pd.Timestamp | None]) -> list[float | None]:
+    def _compute_abnormal_returns(
+            self,
+            start_date: pd.Timestamp,
+            end_date_list: list[pd.Timestamp | None],
+            model,
+            factor_cols: list[str]
+            ) -> list[float | None]:
         """
-        Compute abnormal returns over given windows using Fama-French predicted values.
+        Compute abnormal returns over given windows using predicted values.
 
         Args:
             start_date: Beginning of window.
             end_date_list: List of end dates.
+            model: Fitted return model on excess returns.
+            factor_cols: Factor columns to use for prediction.
 
         Returns:
             List of abnormal returns.
@@ -322,9 +333,9 @@ class YFTargetsParser:
                     ab_norm_ret.append(None)
                     continue
 
-                x = ff_window[["Mkt_RF", "SMB", "HML", "RMW", "CMA"]]
+                x = ff_window[factor_cols]
                 x = sm.add_constant(x, has_constant='add')
-                pred = self.factor_model.predict(x)
+                pred = model.predict(x)
 
                 expected_return = pred.sum() + ff_window["RF"].sum()
                 actual_window = self.hist_daily.loc[self.hist_daily.index.isin(window)]
@@ -340,6 +351,46 @@ class YFTargetsParser:
                 ab_norm_ret.append(None)
 
         return ab_norm_ret
+
+    def _compute_rf_compound_returns(
+            self,
+            start_date: pd.Timestamp,
+            end_date_list: list[pd.Timestamp | None]
+            ) -> list[float | None]:
+        """
+        Compute cumulative risk-free returns over each window, compounded from daily RF.
+        Uses days strictly after start_date to match start->end price return windows.
+
+        Args:
+            start_date: Beginning anchor date (excluded from RF window).
+            end_date_list: List of end dates (included in RF window).
+
+        Returns:
+            List of cumulative RF returns in percent.
+        """
+        rf_returns = []
+
+        for end_date in end_date_list:
+            if end_date is None:
+                rf_returns.append(None)
+                continue
+
+            window = pd.date_range(start_date, end_date, freq='B')
+            if window.tz is None:
+                window = window.tz_localize("America/New_York")
+            window = window.tz_convert("America/New_York").normalize()
+            window = window[window > start_date]
+
+            ff_window = self.ff_factors.loc[self.ff_factors.index.isin(window)]
+            if ff_window.empty:
+                rf_returns.append(None)
+                continue
+
+            daily_rf = ff_window["RF"] / 100.0
+            cumulative_rf = (np.prod(1.0 + daily_rf) - 1.0) * 100.0
+            rf_returns.append(float(cumulative_rf))
+
+        return rf_returns
 
     def compute_end_dates(self) -> None:
         """
@@ -387,23 +438,33 @@ class YFTargetsParser:
             end_date_list = info["end_dates"]
             q_len = info["q_len"]
 
-            snp_start_price, snp_end_price_list = self._find_benchmark_prices(start_date, end_date_list)
-
             reg_returns = self._calc_pct_returns(start_price, end_price_list)
-            snp_returns = self._calc_pct_returns(snp_start_price, snp_end_price_list)
+            rf_returns = self._compute_rf_compound_returns(start_date, end_date_list)
 
-            excess_returns = [a - b if a is not None and b is not None else None for a, b in zip(reg_returns, snp_returns)]
+            excess_returns = [a - b if a is not None and b is not None else None for a, b in zip(reg_returns, rf_returns)]
 
             timeframe_lengths = [2, 3, 4, 5, 6, 7, q_len]
             normalized_returns = [x / y if x is not None and y is not None else None for x, y in zip(reg_returns, timeframe_lengths)]
             normalized_excess_returns = [x / y if x is not None and y is not None else None for x, y in zip(excess_returns, timeframe_lengths)]
 
-            norm_abnormal_returns = self._compute_abnormal_returns(start_date, end_date_list)
+            norm_abnormal_returns = self._compute_abnormal_returns(
+                start_date,
+                end_date_list,
+                self.factor_model,
+                ["Mkt_RF", "SMB", "HML", "RMW", "CMA"]
+            )
+            norm_capm_abnormal_returns = self._compute_abnormal_returns(
+                start_date,
+                end_date_list,
+                self.capm_model,
+                ["Mkt_RF"]
+            )
 
             self.returns[date_str] = {
                 "reg": normalized_returns,
                 "excess": normalized_excess_returns,
                 "abn": norm_abnormal_returns,
+                "abn_capm": norm_capm_abnormal_returns,
                 "q_len": q_len
             }
 
@@ -446,6 +507,14 @@ class YFTargetsParser:
             "six_day_abn_r": r["abn"][4],
             "seven_day_abn_r": r["abn"][5],
             "full_q_abn_r": r["abn"][6],
+
+            "two_day_capm_abn_r": r["abn_capm"][0],
+            "three_day_capm_abn_r": r["abn_capm"][1],
+            "four_day_capm_abn_r": r["abn_capm"][2],
+            "five_day_capm_abn_r": r["abn_capm"][3],
+            "six_day_capm_abn_r": r["abn_capm"][4],
+            "seven_day_capm_abn_r": r["abn_capm"][5],
+            "full_q_capm_abn_r": r["abn_capm"][6],
         }
     
     def compute_eps_surprise(self) -> None:

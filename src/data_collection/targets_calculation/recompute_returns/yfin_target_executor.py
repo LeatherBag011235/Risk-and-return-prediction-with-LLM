@@ -39,6 +39,7 @@ class YFTargetExecutor:
             "two_day_r", "three_day_r", "four_day_r", "five_day_r", "six_day_r", "seven_day_r", "full_q_r",
             "two_day_e_r", "three_day_e_r", "four_day_e_r", "five_day_e_r", "six_day_e_r", "seven_day_e_r", "full_q_e_r",
             "two_day_abn_r", "three_day_abn_r", "four_day_abn_r", "five_day_abn_r", "six_day_abn_r", "seven_day_abn_r", "full_q_abn_r",
+            "two_day_capm_abn_r", "three_day_capm_abn_r", "four_day_capm_abn_r", "five_day_capm_abn_r", "six_day_capm_abn_r", "seven_day_capm_abn_r", "full_q_capm_abn_r",
         ]
         self.cols = ",".join(["report_id"] + self.expected_keys)
         self.placeholders = ",".join(["%s"] * (1 + len(self.expected_keys)))
@@ -64,15 +65,17 @@ class YFTargetExecutor:
                 FROM companies c
                 JOIN reports r ON c.cik = r.cik
                 WHERE r.full_list_default_verbolizer IS NOT NULL
-                  AND (
-                    NOT EXISTS (
-                        SELECT 1
-                        FROM reports r2
-                        JOIN targets_yf t ON r2.id = t.report_id
-                        WHERE r2.cik = c.cik
-                          AND t.two_day_e_r IS NOT NULL
-                          AND t.two_day_abn_r IS NOT NULL
-                    )
+                  AND EXISTS (
+                    SELECT 1
+                    FROM reports r2
+                    LEFT JOIN targets_yf t ON r2.id = t.report_id
+                    WHERE r2.cik = c.cik
+                      AND (
+                        t.report_id IS NULL
+                        OR t.two_day_e_r IS NULL
+                        OR t.two_day_abn_r IS NULL
+                        OR t.two_day_capm_abn_r IS NULL
+                      )
                   );
             """)
             result = cur.fetchall()
