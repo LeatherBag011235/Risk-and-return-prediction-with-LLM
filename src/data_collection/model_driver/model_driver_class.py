@@ -205,6 +205,88 @@ class ModelDriver:
 
         return scores
 
+    def infer_report_type(
+        self,
+        text: Optional[str] = None,
+        context_max_tokens: int = 8000,
+        prompt: Optional[str] = None,
+    ) -> dict[str, float]:
+        """
+        Infers report type probabilities (10-K vs 10-Q) from a report snippet.
+
+        Logic:
+        - Uses one shared context window (~8000 tokens total budget with prompt),
+        - Appends task prompt,
+        - Runs next-token inference,
+        - Aggregates verbalizer-token probabilities per class,
+        - Returns normalized class probabilities.
+
+        Args:
+            text (str, optional): Report text. If None, random report is used.
+            context_max_tokens (int): Token budget for context + prompt.
+            prompt (str, optional): Custom task prompt.
+
+        Returns:
+            dict[str, float]: {"10-K": p_k, "10-Q": p_q}
+        """
+        if not text:
+            text = self.get_random_reports()[0]
+        #"You just saw a part of financial report. Question: This SEC filing is annual or quarterly? Answer with one word: annual or quarterly. Based on this part of report my answer is"
+        task_prompt = prompt or (
+            "You just saw a part of financial report. \n"
+            "Question: This SEC filing is annual or quarterly? Answer with one word: annual or quarterly. \n"
+            "Based on this part of report my answer is"
+        )
+
+        clean_text = self.clean_report(text)
+
+        prompt_tokens = self.tokenizer(task_prompt, return_tensors="pt")["input_ids"].squeeze()
+        if prompt_tokens.dim() == 0:
+            prompt_tokens = prompt_tokens.unsqueeze(0)
+
+        max_report_tokens = max(1, context_max_tokens - prompt_tokens.shape[0])
+        report_tokens = self.tokenizer(
+            clean_text,
+            return_tensors="pt",
+            truncation=True,
+            max_length=max_report_tokens,
+        )["input_ids"].squeeze()
+        if report_tokens.dim() == 0:
+            report_tokens = report_tokens.unsqueeze(0)
+
+        tokens = torch.cat((report_tokens, prompt_tokens), dim=0).to(self.device)
+        token_prob_dict = self.fast_inference(tokens)
+        sorted_items = sorted(
+            token_prob_dict.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )
+
+        print(sorted_items[:20])
+        verbolizer = {
+            "10-K": ["A"],
+            "10-Q": ["B"],
+        }
+
+        scores: dict[str, float] = {}
+        for label, words in verbolizer.items():
+            expanded_words = set()
+            for word in words:
+                lower = word.lower()
+                expanded_words.add(lower)
+                expanded_words.add(lower.capitalize())
+
+            scores[label] = sum(token_prob_dict.get(word, 0.0) for word in expanded_words)
+        
+    
+
+        total_score = sum(scores.values())
+        if total_score <= 0:
+            logger.warning("Report type scores sum to 0. Returning zeros.")
+            return {label: 0.0 for label in scores}
+
+        return {label: score / total_score for label, score in scores.items()}
+
     def compute_sample_scores(self, text: Optional[str] = None) -> tuple[list[list[float]], float]:
         """
         Computes scores for each tokenized segment of a report.

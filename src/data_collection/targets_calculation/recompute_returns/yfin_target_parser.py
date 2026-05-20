@@ -53,7 +53,9 @@ class YFTargetsParser:
         self.firm_sizes: dict[str, float | None] = {}
 
     def _download_and_format_yf_data(self):
-        start = min(self.report_dates)
+        earliest_report = pd.to_datetime(min(self.report_dates))
+        # Keep a left buffer so the first report can map to a previous trading day.
+        start = (earliest_report - pd.Timedelta(days=30)).strftime('%Y-%m-%d')
         end = pd.Timestamp.today().strftime('%Y-%m-%d')
 
         df = self.company.history(start=start, end=end)
@@ -61,7 +63,7 @@ class YFTargetsParser:
 
         df.index = df.index.tz_localize("America/New_York") if df.index.tz is None else df.index.tz_convert("America/New_York")
         df.index = df.index.normalize()
-
+ 
         df = df[["Open", "Close"]].copy()
         df["Return"] = df["Close"].pct_change() * 100
         return df
