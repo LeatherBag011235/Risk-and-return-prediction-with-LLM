@@ -205,42 +205,50 @@ class ModelDriver:
 
         return scores
 
-    def infer_report_type(
+    def predict_metadata(
         self,
+        verbolizer: dict[str, Union[list[str], str]],
+        prompt: str,
         text: Optional[str] = None,
         context_max_tokens: int = 8000,
-        prompt: Optional[str] = None,
-    ) -> dict[str, float]:
+        print_top_tokens: bool = False,
+        top_k_tokens: int = 20,
+    ) -> dict[str, Union[dict[str, float], float]]:
         """
-        Infers report type probabilities (10-K vs 10-Q) from a report snippet.
+        Predicts metadata option probabilities from report text.
 
         Logic:
         - Uses one shared context window (~8000 tokens total budget with prompt),
-        - Appends task prompt,
+        - Appends the given task prompt,
         - Runs next-token inference,
-        - Aggregates verbalizer-token probabilities per class,
-        - Returns normalized class probabilities.
+        - Aggregates verbalizer-token probabilities per label,
+        - Returns normalized probabilities over verbalizer keys.
 
         Args:
+            verbolizer (dict[str, list[str] | str]): Mapping label -> token(s).
+            prompt (str): Task prompt to append after report context.
             text (str, optional): Report text. If None, random report is used.
             context_max_tokens (int): Token budget for context + prompt.
-            prompt (str, optional): Custom task prompt.
+            print_top_tokens (bool): If True, prints top-k tokens by probability.
+            top_k_tokens (int): Number of most probable tokens to print.
 
         Returns:
-            dict[str, float]: {"10-K": p_k, "10-Q": p_q}
+            dict[str, Union[dict[str, float], float]]:
+                {
+                    "probabilities": normalized probabilities per verbalizer key,
+                    "confidence": total verbalizer probability mass before normalization
+                }
         """
         if not text:
             text = self.get_random_reports()[0]
-        #"You just saw a part of financial report. Question: This SEC filing is annual or quarterly? Answer with one word: annual or quarterly. Based on this part of report my answer is"
-        task_prompt = prompt or (
-            "You just saw a part of financial report. \n"
-            "Question: This SEC filing is annual or quarterly? Answer with one word: annual or quarterly. \n"
-            "Based on this part of report my answer is"
-        )
+        if not prompt or not prompt.strip():
+            raise ValueError("prompt must be a non-empty string.")
+        if not verbolizer:
+            raise ValueError("verbolizer must be a non-empty dictionary.")
 
         clean_text = self.clean_report(text)
 
-        prompt_tokens = self.tokenizer(task_prompt, return_tensors="pt")["input_ids"].squeeze()
+        prompt_tokens = self.tokenizer(prompt, return_tensors="pt")["input_ids"].squeeze()
         if prompt_tokens.dim() == 0:
             prompt_tokens = prompt_tokens.unsqueeze(0)
 
@@ -256,36 +264,48 @@ class ModelDriver:
 
         tokens = torch.cat((report_tokens, prompt_tokens), dim=0).to(self.device)
         token_prob_dict = self.fast_inference(tokens)
-        sorted_items = sorted(
-            token_prob_dict.items(),
-            key=lambda x: x[1],
-            reverse=True
-        )
-
-        print(sorted_items[:20])
-        verbolizer = {
-            "10-K": ["A"],
-            "10-Q": ["B"],
-        }
+        if print_top_tokens:
+            sorted_items = sorted(
+                token_prob_dict.items(),
+                key=lambda x: x[1],
+                reverse=True,
+            )
+            print(f"\nTop {top_k_tokens} tokens by probability:")
+            for token, prob in sorted_items[:top_k_tokens]:
+                print(f"{token:<12} | {prob:.6f}")
 
         scores: dict[str, float] = {}
         for label, words in verbolizer.items():
+            word_list = [words] if isinstance(words, str) else words
+ 
             expanded_words = set()
-            for word in words:
-                lower = word.lower()
+            for word in word_list:
+                if not isinstance(word, str):
+                    continue
+                cleaned_word = word.strip()
+                if not cleaned_word:
+                    continue
+                lower = cleaned_word.lower()
                 expanded_words.add(lower)
                 expanded_words.add(lower.capitalize())
 
             scores[label] = sum(token_prob_dict.get(word, 0.0) for word in expanded_words)
-        
-    
 
         total_score = sum(scores.values())
         if total_score <= 0:
-            logger.warning("Report type scores sum to 0. Returning zeros.")
-            return {label: 0.0 for label in scores}
-
-        return {label: score / total_score for label, score in scores.items()}
+            logger.warning("Metadata scores sum to 0. Returning zeros.")
+            return {
+                "confidence": 0.0,
+                "probabilities": {label: 0.0 for label in scores},
+            }
+        normalized_scores = {label: score / total_score for label, score in scores.items()}
+        sorted_scores = dict(
+            sorted(normalized_scores.items(), key=lambda kv: kv[1], reverse=True)
+        )
+        return {
+            "confidence": total_score,
+            "probabilities": sorted_scores,
+        }
 
     def compute_sample_scores(self, text: Optional[str] = None) -> tuple[list[list[float]], float]:
         """
