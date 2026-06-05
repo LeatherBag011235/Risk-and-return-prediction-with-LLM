@@ -288,6 +288,7 @@ class ModelDriver:
                 lower = cleaned_word.lower()
                 expanded_words.add(lower)
                 expanded_words.add(lower.capitalize())
+                expanded_words.add(cleaned_word[:1].upper() + cleaned_word[1:].lower())
 
             scores[label] = sum(token_prob_dict.get(word, 0.0) for word in expanded_words)
 

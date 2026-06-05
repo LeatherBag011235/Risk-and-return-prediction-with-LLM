@@ -17,6 +17,9 @@ class DataFetcher:
     - Prepare data structure suitable for fixed effects regression
     """
 
+    market_cap_labels = ["small", "mid", "large"]
+    market_cap_bins = [-float("inf"), 2e9, 1e10, float("inf")]
+
     def __init__(
         self,
         db_params: dict[str, Any],
@@ -58,15 +61,7 @@ class DataFetcher:
     ) -> pd.DataFrame:
         
         reports_df = self._fetch_reports(regressors)
-
-        if report_filters:
-            for col, val in report_filters.items():
-                if col not in reports_df.columns:
-                    raise ValueError(f"Filter column '{col}' not found in reports table.")
-                if isinstance(val, list):
-                    reports_df = reports_df[reports_df[col].isin(val)]
-                else:
-                    reports_df = reports_df[reports_df[col] == val]
+        reports_df = self._apply_report_filters(reports_df, report_filters)
 
         targets_df = self._fetch_targets()
         merged_df = reports_df.merge(targets_df, left_on='id', right_on='report_id', how='inner')
@@ -79,6 +74,71 @@ class DataFetcher:
             merged_df = self._prepare_fixed_effects(merged_df)
 
         return merged_df
+
+    def fetch_reports_with_company_metadata(
+        self,
+        regressors: list[str] | None = None,
+        company_filters: dict[str, Any] | None = None,
+        report_filters: dict[str, Any] | None = None,
+    ) -> pd.DataFrame:
+        reports_df = self._fetch_reports(regressors)
+        reports_df = self._apply_report_filters(reports_df, report_filters)
+        return self._apply_company_filters(reports_df, company_filters or {})
+
+    def derive_company_quarter_labels(
+        self,
+        reports_df: pd.DataFrame,
+        report_id_col: str = "id",
+        output_col: str = "company_quarter",
+    ) -> pd.DataFrame:
+        required_cols = {report_id_col, "cik", "filed_date"}
+        missing_cols = required_cols.difference(reports_df.columns)
+        if missing_cols:
+            raise ValueError(
+                f"Missing required columns for quarter labels: {sorted(missing_cols)}"
+            )
+
+        if reports_df.empty:
+            return pd.DataFrame(columns=[report_id_col, output_col])
+
+        labels_df = reports_df.copy()
+        labels_df["filed_date"] = pd.to_datetime(labels_df["filed_date"])
+        labels_df = labels_df.sort_values(["cik", "filed_date", report_id_col]).copy()
+        labels_df["year"] = labels_df["filed_date"].dt.year
+        labels_df["filing_rank"] = labels_df.groupby(["cik", "year"]).cumcount()
+        labels_df = labels_df[
+            labels_df["filing_rank"] >= (
+                labels_df.groupby(["cik", "year"])["filing_rank"].transform("max") - 3
+            )
+        ].copy()
+        labels_df[output_col] = labels_df.groupby(["cik", "year"]).cumcount() + 1
+        return labels_df[[report_id_col, output_col]]
+
+    @classmethod
+    def bucket_market_cap(cls, f_size: float) -> str | None:
+        if pd.isna(f_size):
+            return None
+
+        return pd.cut(
+            pd.Series([f_size]),
+            bins=cls.market_cap_bins,
+            labels=cls.market_cap_labels,
+            right=False,
+        ).iloc[0]
+
+    def add_market_cap_bucket(
+        self,
+        reports_df: pd.DataFrame,
+        source_col: str = "f_size",
+        output_col: str = "market_cap_label",
+    ) -> pd.DataFrame:
+        if source_col not in reports_df.columns:
+            raise ValueError(f"Column '{source_col}' not found in reports DataFrame.")
+
+        labeled_df = reports_df.copy()
+        labeled_df[output_col] = labeled_df[source_col].apply(self.bucket_market_cap)
+        labeled_df[output_col] = labeled_df[output_col].astype("object")
+        return labeled_df
 
     def _print_available_sectors(self) -> None:
         with self.get_db_conn() as conn:
@@ -131,6 +191,24 @@ class DataFetcher:
 
         df = self._expand_list_columns(df, regressors)
         return df
+
+    def _apply_report_filters(
+        self,
+        reports_df: pd.DataFrame,
+        report_filters: dict[str, Any] | None = None,
+    ) -> pd.DataFrame:
+        if not report_filters:
+            return reports_df
+
+        filtered_df = reports_df.copy()
+        for col, val in report_filters.items():
+            if col not in filtered_df.columns:
+                raise ValueError(f"Filter column '{col}' not found in reports table.")
+            if isinstance(val, list):
+                filtered_df = filtered_df[filtered_df[col].isin(val)]
+            else:
+                filtered_df = filtered_df[filtered_df[col] == val]
+        return filtered_df
 
     def _expand_list_columns(self, df: pd.DataFrame, regressors: list[str] | None) -> pd.DataFrame:
         if not regressors:
