@@ -1,5 +1,6 @@
 import argparse
 import sys
+import time
 from pathlib import Path
 
 
@@ -31,9 +32,13 @@ from src.data_collection.model_driver.model_driver_class import ModelDriver
 
 
 MODEL_NAME = "mistralai/Mistral-7B-v0.1"
-DEFAULT_CONTEXT_MAX_TOKENS = 8000
-DEFAULT_BATCH_SIZE = 5
 VALID_REPORT_TYPES = ("10-K", "10-Q")
+REPORT_IDS = [
+    113369, 46793, 71451, 77969, 77215, 66849, 54688, 100445, 146961, 7429,
+    113146, 72348, 12788, 139793, 78295, 121246, 27216, 40882, 26728, 67978,
+    2058, 107932, 120270, 23362, 31013, 31788, 108160, 50955, 123, 122745,
+    54684, 108896, 96893, 32199, 116202, 20606, 150214, 141209, 13453, 132840,
+]
 
 
 TASK_CONFIGS = {
@@ -155,30 +160,6 @@ UPSERT_SQL = """
 """
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Run metadata prediction pipeline for reports missing metadata predictions."
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=DEFAULT_BATCH_SIZE,
-        help="Number of reports to save per DB commit.",
-    )
-    parser.add_argument(
-        "--context-max-tokens",
-        type=int,
-        default=DEFAULT_CONTEXT_MAX_TOKENS,
-        help="Maximum total context tokens per prompt call.",
-    )
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help="Optional limit for the number of pending reports to process.",
-    )
-    return parser.parse_args()
-
 
 def build_limit_clause(limit: int | None) -> str:
     if limit is None:
@@ -188,7 +169,34 @@ def build_limit_clause(limit: int | None) -> str:
     return f"LIMIT {limit}"
 
 
-def fetch_pending_reports(fetcher: DataFetcher, limit: int | None = None) -> pd.DataFrame:
+def fetch_pending_reports(
+    fetcher: DataFetcher,
+    report_ids: list[int] | None = None,
+    limit: int | None = None,
+) -> pd.DataFrame:
+    if report_ids:
+        ordered_ids_df = pd.DataFrame(
+            {"report_id": report_ids, "_sample_order": range(len(report_ids))}
+        )
+        query = """
+            SELECT
+                r.id AS report_id,
+                r.f_size
+            FROM reports r
+            WHERE r.raw_text IS NOT NULL
+              AND r.report_type IN %s
+              AND r.id = ANY(%s)
+        """
+        with fetcher.get_db_conn() as conn:
+            pending_df = pd.read_sql_query(
+                query,
+                conn,
+                params=(VALID_REPORT_TYPES, report_ids),
+            )
+        pending_df = ordered_ids_df.merge(pending_df, on="report_id", how="inner")
+        pending_df = pending_df.sort_values("_sample_order").drop(columns="_sample_order")
+        return pending_df
+
     limit_clause = build_limit_clause(limit)
     query = f"""
         SELECT
@@ -213,9 +221,14 @@ def fetch_pending_reports(fetcher: DataFetcher, limit: int | None = None) -> pd.
 
 def prepare_pending_reports(
     fetcher: DataFetcher,
+    report_ids: list[int] | None = None,
     limit: int | None = None,
 ) -> pd.DataFrame:
-    pending_keys_df = fetch_pending_reports(fetcher=fetcher, limit=limit)
+    pending_keys_df = fetch_pending_reports(
+        fetcher=fetcher,
+        report_ids=report_ids,
+        limit=limit,
+    )
     if pending_keys_df.empty:
         return pending_keys_df
 
@@ -223,7 +236,7 @@ def prepare_pending_reports(
         regressors=["raw_text"],
         report_filters={"report_type": list(VALID_REPORT_TYPES)},
     )
-    quarter_labels_df = fetcher.derive_company_quarter_labels(
+    quarter_labels_df = fetcher.derive_company_quarter_labels_by_cycle(
         reports_df,
         report_id_col="id",
         output_col="true_company_quarter",
@@ -257,18 +270,25 @@ def load_model_driver(model_name: str = MODEL_NAME) -> ModelDriver:
     return ModelDriver(model_name=model_name, model=model)
 
 
+def format_seconds(total_seconds: float) -> str:
+    total_seconds = max(0, int(round(total_seconds)))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours > 0:
+        return f"{hours:d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
+
+
 def predict_single_task(
     model_driver: ModelDriver,
     raw_text: str,
     prompt: str,
     verbolizer: dict,
-    context_max_tokens: int,
 ) -> tuple[object, float, dict]:
     result = model_driver.predict_metadata(
         verbolizer=verbolizer,
         prompt=prompt,
         text=raw_text,
-        context_max_tokens=context_max_tokens,
     )
     probabilities = result["probabilities"]
     predicted_label = max(probabilities, key=probabilities.get)
@@ -278,7 +298,6 @@ def predict_single_task(
 def build_prediction_row(
     row,
     model_driver: ModelDriver,
-    context_max_tokens: int,
 ) -> dict:
     payload = {
         "report_id": int(row.report_id),
@@ -290,18 +309,16 @@ def build_prediction_row(
         "true_market_cap": None if pd.isna(row.true_market_cap) else row.true_market_cap,
     }
 
-    for config in TASK_CONFIGS.values():
+    for key, config in TASK_CONFIGS.items():
         predicted_label, confidence, probabilities = predict_single_task(
             model_driver=model_driver,
             raw_text=row.raw_text,
             prompt=config["prompt"],
             verbolizer=config["verbolizer"],
-            context_max_tokens=context_max_tokens,
         )
         payload[config["pred_col"]] = predicted_label
         payload[config["confidence_col"]] = confidence
         payload[config["probabilities_col"]] = Json(probabilities)
-
     return payload
 
 
@@ -315,15 +332,15 @@ def save_batch(conn: psycopg2.extensions.connection, batch_rows: list[dict]) -> 
 
 
 def run_pipeline(
-    batch_size: int,
-    context_max_tokens: int,
-    limit: int | None = None,
 ) -> None:
+    batch_size = 5
+    report_ids = None
+
     if batch_size <= 0:
         raise ValueError("batch_size must be positive.")
 
     fetcher = DataFetcher(DB_PARAMS)
-    pending_df = prepare_pending_reports(fetcher=fetcher, limit=limit)
+    pending_df = prepare_pending_reports(fetcher=fetcher, report_ids=report_ids)
     if pending_df.empty:
         logger.info("No pending reports found for metadata prediction.")
         return
@@ -334,25 +351,40 @@ def run_pipeline(
     saved_rows = 0
     failed_rows = 0
     batch_rows: list[dict] = []
+    row_durations: list[float] = []
 
     with psycopg2.connect(**DB_PARAMS) as conn:
-        for row in tqdm(
+        progress_bar = tqdm(
             pending_df.itertuples(index=False),
             total=len(pending_df),
             desc="Metadata prediction",
             unit="report",
-        ):
+        )
+        for row_index, row in enumerate(progress_bar, start=1):
+            row_start_time = time.perf_counter()
+            row_failed = False
             try:
-                batch_rows.append(
-                    build_prediction_row(
-                        row=row,
-                        model_driver=model_driver,
-                        context_max_tokens=context_max_tokens,
-                    )
+                prediction_row = build_prediction_row(
+                    row=row,
+                    model_driver=model_driver,
                 )
+                batch_rows.append(prediction_row)
             except Exception:
+                row_failed = True
                 failed_rows += 1
                 logger.exception("Failed to process report_id=%s", row.report_id)
+            finally:
+                row_duration = time.perf_counter() - row_start_time
+                row_durations.append(row_duration)
+                avg_row_duration = sum(row_durations) / len(row_durations)
+                remaining_rows = len(pending_df) - row_index
+                projected_seconds_left = avg_row_duration * remaining_rows
+                progress_bar.set_postfix(
+                    avg_row_sec=f"{avg_row_duration:.2f}",
+                    eta=format_seconds(projected_seconds_left),
+                )
+
+            if row_failed:
                 continue
 
             if len(batch_rows) >= batch_size:
@@ -375,12 +407,7 @@ def run_pipeline(
 
 
 def main() -> None:
-    args = parse_args()
-    run_pipeline(
-        batch_size=args.batch_size,
-        context_max_tokens=args.context_max_tokens,
-        limit=args.limit,
-    )
+    run_pipeline()
 
 
 if __name__ == "__main__":

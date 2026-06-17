@@ -114,6 +114,65 @@ class DataFetcher:
         labels_df[output_col] = labels_df.groupby(["cik", "year"]).cumcount() + 1
         return labels_df[[report_id_col, output_col]]
 
+    def derive_company_quarter_labels_by_cycle(
+        self,
+        reports_df: pd.DataFrame,
+        report_id_col: str = "id",
+        output_col: str = "company_quarter",
+    ) -> pd.DataFrame:
+        required_cols = {report_id_col, "cik", "filed_date", "report_type"}
+        missing_cols = required_cols.difference(reports_df.columns)
+        if missing_cols:
+            raise ValueError(
+                f"Missing required columns for cycle-based quarter labels: {sorted(missing_cols)}"
+            )
+
+        if reports_df.empty:
+            return pd.DataFrame(columns=[report_id_col, output_col])
+
+        labels_df = reports_df.copy()
+        labels_df["filed_date"] = pd.to_datetime(labels_df["filed_date"])
+        labels_df = labels_df[
+            labels_df["report_type"].isin(["10-K", "10-Q"]) & labels_df["filed_date"].notna()
+        ].copy()
+        labels_df = labels_df.sort_values(["cik", "filed_date", report_id_col]).copy()
+
+        label_rows: list[dict[str, Any]] = []
+
+        for _, company_df in labels_df.groupby("cik", sort=False):
+            company_df = company_df.reset_index(drop=True)
+            segment_start = 0
+
+            annual_positions = company_df.index[company_df["report_type"] == "10-K"].tolist()
+            for annual_pos in annual_positions:
+                segment_df = company_df.iloc[segment_start:annual_pos + 1].copy()
+                if not segment_df.empty:
+                    labeled_segment = segment_df.tail(4).copy()
+                    if labeled_segment.iloc[-1]["report_type"] == "10-K":
+                        quarter_labels = list(range(5 - len(labeled_segment), 5))
+                        if len(labeled_segment) == 4:
+                            quarter_labels = [1, 2, 3, 4]
+                        labeled_segment[output_col] = quarter_labels
+                        label_rows.extend(
+                            labeled_segment[[report_id_col, output_col]].to_dict("records")
+                        )
+                segment_start = annual_pos + 1
+
+            tail_df = company_df.iloc[segment_start:].copy()
+            if not tail_df.empty and tail_df["report_type"].eq("10-Q").all():
+                tail_length = min(len(tail_df), 3)
+                labeled_tail = tail_df.head(tail_length).copy()
+                labeled_tail[output_col] = list(range(1, tail_length + 1))
+                label_rows.extend(
+                    labeled_tail[[report_id_col, output_col]].to_dict("records")
+                )
+
+        if not label_rows:
+            return pd.DataFrame(columns=[report_id_col, output_col])
+
+        result_df = pd.DataFrame(label_rows).drop_duplicates(subset=[report_id_col], keep="last")
+        return result_df[[report_id_col, output_col]]
+
     @classmethod
     def bucket_market_cap(cls, f_size: float) -> str | None:
         if pd.isna(f_size):
