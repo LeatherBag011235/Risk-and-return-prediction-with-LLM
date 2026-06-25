@@ -33,7 +33,7 @@ cur.execute("""
             COALESCE(array_length(full_list_default_verbolizer, 1), 0),
             COALESCE(array_length(full_list_shrink_verbolizer, 1), 0)
         ))
-    FROM reports
+    FROM reports_2
     WHERE full_list_default_verbolizer IS NOT NULL
       AND full_list_shrink_verbolizer IS NOT NULL
       AND report_type IN ('10-K', '10-Q')
@@ -50,7 +50,7 @@ for report_type, max_len in max_len_by_report_type.items():
 
 cur.execute("""
     SELECT id, report_type, full_list_default_verbolizer, full_list_shrink_verbolizer
-    FROM reports
+    FROM reports_2
     WHERE full_list_default_verbolizer IS NOT NULL
       AND full_list_shrink_verbolizer IS NOT NULL
       AND report_type IN ('10-K', '10-Q')
@@ -68,7 +68,7 @@ for i, (report_id, report_type, default_list, shrink_list) in enumerate(tqdm(row
         stretch_shrink = stretch_transform(shrink_list, max_len)
 
         cur.execute("""
-            UPDATE reports
+            UPDATE reports_2
             SET
                 stretch_default = %s,
                 stretch_shrink = %s

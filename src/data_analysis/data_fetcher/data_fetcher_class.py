@@ -60,8 +60,7 @@ class DataFetcher:
         prepare_fixed_effects: bool = False
     ) -> pd.DataFrame:
         
-        reports_df = self._fetch_reports(regressors)
-        reports_df = self._apply_report_filters(reports_df, report_filters)
+        reports_df = self._fetch_reports(regressors, report_filters)
 
         targets_df = self._fetch_targets()
         merged_df = reports_df.merge(targets_df, left_on='id', right_on='report_id', how='inner')
@@ -81,8 +80,7 @@ class DataFetcher:
         company_filters: dict[str, Any] | None = None,
         report_filters: dict[str, Any] | None = None,
     ) -> pd.DataFrame:
-        reports_df = self._fetch_reports(regressors)
-        reports_df = self._apply_report_filters(reports_df, report_filters)
+        reports_df = self._fetch_reports(regressors, report_filters)
         return self._apply_company_filters(reports_df, company_filters or {})
 
     def derive_company_quarter_labels(
@@ -230,7 +228,11 @@ class DataFetcher:
             df = pd.read_sql_query(query, conn)
             return df['column_name'].tolist()
 
-    def _fetch_reports(self, regressors: list[str] | None) -> pd.DataFrame:
+    def _fetch_reports(
+        self,
+        regressors: list[str] | None,
+        report_filters: dict[str, Any] | None = None,
+    ) -> pd.DataFrame:
         with self.get_db_conn() as conn:
             columns = ['id', 'cik', 'filed_date', 'report_type']
             if regressors:
@@ -240,6 +242,13 @@ class DataFetcher:
 
             cols_str = ", ".join(columns)
             where_clauses = [f"{reg} IS NOT NULL" for reg in regressors] if regressors else []
+            if report_filters:
+                for col, val in report_filters.items():
+                    if isinstance(val, list):
+                        values = ", ".join(f"'{item}'" for item in val)
+                        where_clauses.append(f"{col} IN ({values})")
+                    else:
+                        where_clauses.append(f"{col} = '{val}'")
             where_sql = " AND ".join(where_clauses)
             if where_sql:
                 query = f"SELECT {cols_str} FROM {self.reports_table} WHERE {where_sql}"
@@ -248,8 +257,7 @@ class DataFetcher:
 
             df = pd.read_sql_query(query, conn)
 
-        df = self._expand_list_columns(df, regressors)
-        return df
+        return self._expand_list_columns(df, regressors)
 
     def _apply_report_filters(
         self,
