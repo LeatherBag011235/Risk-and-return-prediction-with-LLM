@@ -1,0 +1,29 @@
+{
+  "title": "Return Prediction with LLMs and Financial Texts: Replication Code and Supplementary Materials",
+  "creators": [
+    {
+      "name": "Shibanov, Maxim",
+      "affiliation": "Higher School of Economics"
+    }
+  ],
+  "description": "Replication code and supplementary materials for the paper Return Prediction with LLMs and Financial Texts.",
+  "license": "MIT",
+  "keywords": [
+    "large language models",
+    "financial filings",
+    "textual analysis",
+    "investor sentiment",
+    "asset pricing",
+    "return prediction",
+    "Fama-French factors"
+  ],
+  "related_identifiers": [
+    {
+      "scheme": "url",
+      "identifier": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=TBD",
+      "relation": "isSupplementTo",
+      "resource_type": "publication-preprint"
+    }
+  ],
+  "upload_type": "software"
+}

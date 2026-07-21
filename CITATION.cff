@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use this replication code, please cite the archived software release and the associated paper."
+type: software
+title: "Return Prediction with LLMs and Financial Texts"
+authors:
+  - family-names: "Shibanov"
+    given-names: "Maxim"
+    affiliation: "Higher School of Economics"
+repository-code: "https://github.com/LeatherBag011235/Risk-and-return-prediction-with-LLM"
+version: "1.0.0-ssrn"
+date-released: "2026-07-21"
+license: "MIT"
+keywords:
+  - "large language models"
+  - "financial filings"
+  - "textual analysis"
+  - "investor sentiment"
+  - "asset pricing"
+  - "return prediction"
+  - "Fama-French factors"
+abstract: "Replication code and supplementary materials for the paper Return Prediction with LLMs and Financial Texts."

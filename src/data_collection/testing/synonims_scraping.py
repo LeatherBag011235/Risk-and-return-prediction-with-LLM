@@ -1,9 +1,13 @@
 import requests
 
-API_KEY = "972efd50-c997-4c60-96f6-ffddc29dc0f1"  # Replace this with your actual key
+from src.data_collection.consts import THESAURUS_API_KEY
+
 word = "risk"  # Change this to any word you want to test
 
-url = f"https://www.dictionaryapi.com/api/v3/references/thesaurus/json/{word}?key={API_KEY}"
+if not THESAURUS_API_KEY:
+    raise RuntimeError("Set THESAURUS_API_KEY before running this script.")
+
+url = f"https://www.dictionaryapi.com/api/v3/references/thesaurus/json/{word}?key={THESAURUS_API_KEY}"
 
 response = requests.get(url)
 
