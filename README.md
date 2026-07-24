@@ -90,7 +90,6 @@ If you use this repository, please cite the archived software release:
   title = {Return Prediction with LLMs and Financial Texts: Replication Code and Supplementary Materials},
   year = {2026},
   publisher = {Zenodo},
-  doi = {TO_BE_FILLED_AFTER_ZENODO_RELEASE},
   url = {https://github.com/LeatherBag011235/Risk-and-return-prediction-with-LLM}
 }
 ```

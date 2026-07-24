@@ -17,13 +17,5 @@
     "return prediction",
     "Fama-French factors"
   ],
-  "related_identifiers": [
-    {
-      "scheme": "url",
-      "identifier": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=TBD",
-      "relation": "isSupplementTo",
-      "resource_type": "publication-preprint"
-    }
-  ],
   "upload_type": "software"
 }
